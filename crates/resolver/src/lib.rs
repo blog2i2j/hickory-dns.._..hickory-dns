@@ -38,7 +38,7 @@
 //! ```rust,no_run
 //! # #[tokio::main]
 //! # async fn main() {
-//! # #[cfg(feature = "tokio-runtime")]
+//! # #[cfg(feature = "tokio")]
 //! # {
 //! # use std::net::*;
 //! # use hickory_resolver::Resolver;
@@ -55,7 +55,7 @@
 //!
 //! ```rust
 //! # fn main() {
-//! # #[cfg(feature = "tokio-runtime")]
+//! # #[cfg(feature = "tokio")]
 //! # {
 //! use std::net::*;
 //! use tokio::runtime::Runtime;
@@ -93,7 +93,7 @@
 //!
 //! ```rust,no_run
 //! # fn main() {
-//! # #[cfg(feature = "tokio-runtime")]
+//! # #[cfg(feature = "tokio")]
 //! # {
 //! # use std::net::*;
 //! # use tokio::runtime::Runtime;
@@ -131,17 +131,17 @@
 //!
 //! The following DNS protocols are optionally supported:
 //!
-//! - Enable `dns-over-rustls` for DNS over TLS (DoT)
-//! - Enable `dns-over-https-rustls` for DNS over HTTP/2 (DoH)
-//! - Enable `dns-over-quic` for DNS over QUIC (DoQ)
-//! - Enable `dns-over-h3` for DNS over HTTP/3 (DoH3)
+//! - Enable `tls` for DNS over TLS (DoT)
+//! - Enable `https-rustls` for DNS over HTTP/2 (DoH)
+//! - Enable `quic` for DNS over QUIC (DoQ)
+//! - Enable `h3` for DNS over HTTP/3 (DoH3)
 //!
 //! ### Example
 //!
 //! Enable the TLS library through the dependency on `hickory-resolver`:
 //!
 //! ```toml
-//! hickory-resolver = { version = "*", features = ["dns-over-rustls"] }
+//! hickory-resolver = { version = "*", features = ["tls"] }
 //! ```
 //!
 //! A default TLS configuration is available for Cloudflare's `1.1.1.1` DNS service (Quad9 as
@@ -149,13 +149,13 @@
 //!
 //! ```rust,no_run
 //! # fn main() {
-//! # #[cfg(feature = "tokio-runtime")]
+//! # #[cfg(feature = "tokio")]
 //! # {
 //! use hickory_resolver::TokioResolver;
 //! use hickory_resolver::config::*;
 //!
 //! // Construct a new Resolver with default configuration options
-//! # #[cfg(feature = "dns-over-rustls")]
+//! # #[cfg(feature = "__tls")]
 //! let mut resolver = TokioResolver::tokio(ResolverConfig::cloudflare_tls(), ResolverOpts::default());
 //!
 //! // see example above...
@@ -199,9 +199,9 @@ pub mod config;
 pub mod dns_lru;
 mod error;
 pub use error::{ResolveError, ResolveErrorKind};
-#[cfg(feature = "dns-over-https-rustls")]
+#[cfg(feature = "__https")]
 mod h2;
-#[cfg(feature = "dns-over-h3")]
+#[cfg(feature = "__h3")]
 mod h3;
 mod hosts;
 pub use hosts::Hosts;
@@ -209,19 +209,19 @@ pub mod lookup;
 pub mod lookup_ip;
 // TODO: consider #[doc(hidden)]
 pub mod name_server;
-#[cfg(feature = "tokio-runtime")]
+#[cfg(feature = "tokio")]
 use name_server::TokioConnectionProvider;
-#[cfg(feature = "dns-over-quic")]
+#[cfg(feature = "__quic")]
 mod quic;
 mod resolver;
 pub use resolver::LookupFuture;
 pub use resolver::Resolver;
-#[cfg(feature = "tokio-runtime")]
+#[cfg(feature = "tokio")]
 pub use resolver::TokioResolver;
 pub mod system_conf;
 #[cfg(test)]
 mod tests;
-#[cfg(feature = "dns-over-rustls")]
+#[cfg(feature = "__tls")]
 mod tls;
 
 #[doc(hidden)]
@@ -230,7 +230,7 @@ pub type AsyncResolver<P> = Resolver<P>;
 
 #[doc(hidden)]
 #[deprecated(since = "0.25.0", note = "use `TokioResolver` instead")]
-#[cfg(feature = "tokio-runtime")]
+#[cfg(feature = "tokio")]
 pub type TokioAsyncResolver = Resolver<TokioConnectionProvider>;
 
 /// returns a version as specified in Cargo.toml

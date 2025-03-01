@@ -9,9 +9,14 @@
 
 #![deny(missing_docs)]
 
-use std::cmp::Ordering;
-use std::sync::Arc;
-use std::{fmt, io, sync};
+use alloc::borrow::ToOwned;
+use alloc::boxed::Box;
+use alloc::string::{String, ToString};
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+use core::cmp::Ordering;
+use core::fmt;
+use std::{io, sync};
 
 #[cfg(feature = "backtrace")]
 pub use backtrace::Backtrace as ExtBacktrace;
@@ -56,7 +61,7 @@ macro_rules! trace {
 }
 
 /// An alias for results returned by functions of this crate
-pub(crate) type ProtoResult<T> = ::std::result::Result<T, ProtoError>;
+pub(crate) type ProtoResult<T> = ::core::result::Result<T, ProtoError>;
 
 /// The error kind for errors that get returned in the crate
 #[derive(Debug, EnumAsInner, Error)]
@@ -275,63 +280,63 @@ pub enum ProtoErrorKind {
 
     /// A utf8 parsing error
     #[error("error parsing utf8 string")]
-    Utf8(#[from] std::str::Utf8Error),
+    Utf8(#[from] core::str::Utf8Error),
 
     /// A utf8 parsing error
     #[error("error parsing utf8 string")]
-    FromUtf8(#[from] std::string::FromUtf8Error),
+    FromUtf8(#[from] alloc::string::FromUtf8Error),
 
     /// An int parsing error
     #[error("error parsing int")]
-    ParseInt(#[from] std::num::ParseIntError),
+    ParseInt(#[from] core::num::ParseIntError),
 
     /// A Quinn (Quic) connection error occurred
-    #[cfg(feature = "dns-over-quic")]
+    #[cfg(feature = "__quic")]
     #[error("error creating quic connection: {0}")]
     QuinnConnect(#[from] quinn::ConnectError),
 
     /// A Quinn (QUIC) connection error occurred
-    #[cfg(feature = "dns-over-quic")]
+    #[cfg(feature = "__quic")]
     #[error("error with quic connection: {0}")]
     QuinnConnection(#[from] quinn::ConnectionError),
 
     /// A Quinn (QUIC) write error occurred
-    #[cfg(feature = "dns-over-quic")]
+    #[cfg(feature = "__quic")]
     #[error("error writing to quic connection: {0}")]
     QuinnWriteError(#[from] quinn::WriteError),
 
     /// A Quinn (QUIC) read error occurred
-    #[cfg(feature = "dns-over-quic")]
+    #[cfg(feature = "__quic")]
     #[error("error writing to quic read: {0}")]
     QuinnReadError(#[from] quinn::ReadExactError),
 
     /// A Quinn (QUIC) read error occurred
-    #[cfg(feature = "dns-over-quic")]
+    #[cfg(feature = "__quic")]
     #[error("referenced a closed QUIC stream: {0}")]
     QuinnStreamError(#[from] quinn::ClosedStream),
 
     /// A Quinn (QUIC) configuration error occurred
-    #[cfg(feature = "dns-over-quic")]
+    #[cfg(feature = "__quic")]
     #[error("error constructing quic configuration: {0}")]
     QuinnConfigError(#[from] quinn::ConfigError),
 
     /// QUIC TLS config must include an AES-128-GCM cipher suite
-    #[cfg(feature = "dns-over-quic")]
+    #[cfg(feature = "__quic")]
     #[error("QUIC TLS config must include an AES-128-GCM cipher suite")]
     QuinnTlsConfigError(#[from] quinn::crypto::rustls::NoInitialCipherSuite),
 
     /// Unknown QUIC stream used
-    #[cfg(feature = "dns-over-quic")]
+    #[cfg(feature = "__quic")]
     #[error("an unknown quic stream was used")]
     QuinnUnknownStreamError,
 
     /// A quic message id should always be 0
-    #[cfg(feature = "dns-over-quic")]
+    #[cfg(feature = "__quic")]
     #[error("quic messages should always be 0, got: {0}")]
     QuicMessageIdNot0(u16),
 
     /// A Rustls error occurred
-    #[cfg(feature = "rustls")]
+    #[cfg(feature = "__tls")]
     #[error("rustls construction error: {0}")]
     RustlsError(#[from] rustls::Error),
 }
@@ -791,25 +796,25 @@ impl Clone for ProtoErrorKind {
             Utf8(ref e) => Utf8(*e),
             FromUtf8(ref e) => FromUtf8(e.clone()),
             ParseInt(ref e) => ParseInt(e.clone()),
-            #[cfg(feature = "dns-over-quic")]
+            #[cfg(feature = "__quic")]
             QuinnConnect(ref e) => QuinnConnect(e.clone()),
-            #[cfg(feature = "dns-over-quic")]
+            #[cfg(feature = "__quic")]
             QuinnConnection(ref e) => QuinnConnection(e.clone()),
-            #[cfg(feature = "dns-over-quic")]
+            #[cfg(feature = "__quic")]
             QuinnWriteError(ref e) => QuinnWriteError(e.clone()),
-            #[cfg(feature = "dns-over-quic")]
+            #[cfg(feature = "__quic")]
             QuicMessageIdNot0(val) => QuicMessageIdNot0(val),
-            #[cfg(feature = "dns-over-quic")]
+            #[cfg(feature = "__quic")]
             QuinnReadError(ref e) => QuinnReadError(e.clone()),
-            #[cfg(feature = "dns-over-quic")]
+            #[cfg(feature = "__quic")]
             QuinnStreamError(ref e) => QuinnStreamError(e.clone()),
-            #[cfg(feature = "dns-over-quic")]
+            #[cfg(feature = "__quic")]
             QuinnConfigError(ref e) => QuinnConfigError(e.clone()),
-            #[cfg(feature = "dns-over-quic")]
+            #[cfg(feature = "__quic")]
             QuinnTlsConfigError(ref e) => QuinnTlsConfigError(e.clone()),
-            #[cfg(feature = "dns-over-quic")]
+            #[cfg(feature = "__quic")]
             QuinnUnknownStreamError => QuinnUnknownStreamError,
-            #[cfg(feature = "rustls")]
+            #[cfg(feature = "__tls")]
             RustlsError(ref e) => RustlsError(e.clone()),
         }
     }

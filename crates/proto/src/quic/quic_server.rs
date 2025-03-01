@@ -5,7 +5,8 @@
 // https://opensource.org/licenses/MIT>, at your option. This file may not be
 // copied, modified, or distributed except according to those terms.
 
-use std::{io, net::SocketAddr, sync::Arc};
+use alloc::sync::Arc;
+use std::{io, net::SocketAddr};
 
 use quinn::crypto::rustls::QuicServerConfig;
 use quinn::{Connection, Endpoint, ServerConfig};
@@ -13,7 +14,7 @@ use rustls::server::ResolvesServerCert;
 use rustls::server::ServerConfig as TlsServerConfig;
 use rustls::version::TLS13;
 
-use crate::{error::ProtoError, udp::UdpSocket};
+use crate::{error::ProtoError, rustls::default_provider, udp::UdpSocket};
 
 use super::{
     quic_config,
@@ -41,13 +42,11 @@ impl QuicServer {
         socket: tokio::net::UdpSocket,
         server_cert_resolver: Arc<dyn ResolvesServerCert>,
     ) -> Result<Self, ProtoError> {
-        let mut config = TlsServerConfig::builder_with_provider(Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_protocol_versions(&[&TLS13])
-        .unwrap() // The ring default provider is guaranteed to support TLS 1.3
-        .with_no_client_auth()
-        .with_cert_resolver(server_cert_resolver);
+        let mut config = TlsServerConfig::builder_with_provider(Arc::new(default_provider()))
+            .with_protocol_versions(&[&TLS13])
+            .unwrap() // The ring default provider is guaranteed to support TLS 1.3
+            .with_no_client_auth()
+            .with_cert_resolver(server_cert_resolver);
 
         config.alpn_protocols = vec![quic_stream::DOQ_ALPN.to_vec()];
 
