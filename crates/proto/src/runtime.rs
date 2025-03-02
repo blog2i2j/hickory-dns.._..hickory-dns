@@ -1,18 +1,19 @@
 //! Abstractions to deal with different async runtimes.
 
-use std::future::Future;
+use alloc::boxed::Box;
+#[cfg(feature = "__quic")]
+use alloc::sync::Arc;
+use core::future::Future;
+use core::marker::Send;
+use core::pin::Pin;
+use core::time::Duration;
 use std::io;
-use std::marker::Send;
 use std::net::SocketAddr;
-use std::pin::Pin;
-#[cfg(any(feature = "dns-over-quic", feature = "dns-over-h3"))]
-use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
-#[cfg(any(test, feature = "tokio-runtime"))]
+#[cfg(any(test, feature = "tokio"))]
 use tokio::runtime::Runtime;
-#[cfg(any(test, feature = "tokio-runtime"))]
+#[cfg(any(test, feature = "tokio"))]
 use tokio::task::JoinHandle;
 
 use crate::error::ProtoError;
@@ -20,7 +21,7 @@ use crate::tcp::DnsTcpStream;
 use crate::udp::DnsUdpSocket;
 
 /// Spawn a background task, if it was present
-#[cfg(any(test, feature = "tokio-runtime"))]
+#[cfg(any(test, feature = "tokio"))]
 pub fn spawn_bg<F: Future<Output = R> + Send + 'static, R: Send + 'static>(
     runtime: &Runtime,
     background: F,
@@ -28,12 +29,12 @@ pub fn spawn_bg<F: Future<Output = R> + Send + 'static, R: Send + 'static>(
     runtime.spawn(background)
 }
 
-#[cfg(feature = "tokio-runtime")]
+#[cfg(feature = "tokio")]
 #[doc(hidden)]
 pub mod iocompat {
+    use core::pin::Pin;
+    use core::task::{Context, Poll};
     use std::io;
-    use std::pin::Pin;
-    use std::task::{Context, Poll};
 
     use futures_io::{AsyncRead, AsyncWrite};
     use tokio::io::{AsyncRead as TokioAsyncRead, AsyncWrite as TokioAsyncWrite, ReadBuf};
@@ -109,13 +110,14 @@ pub mod iocompat {
     }
 }
 
-#[cfg(feature = "tokio-runtime")]
+#[cfg(feature = "tokio")]
 #[allow(unreachable_pub)]
 mod tokio_runtime {
-    use std::sync::{Arc, Mutex};
+    use alloc::sync::Arc;
+    use std::sync::Mutex;
 
     use futures_util::FutureExt;
-    #[cfg(any(feature = "dns-over-quic", feature = "dns-over-h3"))]
+    #[cfg(feature = "__quic")]
     use quinn::Runtime;
     use tokio::net::{TcpSocket, TcpStream, UdpSocket as TokioUdpSocket};
     use tokio::task::JoinSet;
@@ -201,7 +203,7 @@ mod tokio_runtime {
             Box::pin(tokio::net::UdpSocket::bind(local_addr))
         }
 
-        #[cfg(any(feature = "dns-over-quic", feature = "dns-over-h3"))]
+        #[cfg(feature = "__quic")]
         fn quic_binder(&self) -> Option<&dyn QuicSocketBinder> {
             Some(&TokioQuicSocketBinder)
         }
@@ -215,10 +217,10 @@ mod tokio_runtime {
         {}
     }
 
-    #[cfg(any(feature = "dns-over-quic", feature = "dns-over-h3"))]
+    #[cfg(feature = "__quic")]
     struct TokioQuicSocketBinder;
 
-    #[cfg(any(feature = "dns-over-quic", feature = "dns-over-h3"))]
+    #[cfg(feature = "__quic")]
     impl QuicSocketBinder for TokioQuicSocketBinder {
         fn bind_quic(
             &self,
@@ -231,7 +233,7 @@ mod tokio_runtime {
     }
 }
 
-#[cfg(feature = "tokio-runtime")]
+#[cfg(feature = "tokio")]
 pub use tokio_runtime::{TokioHandle, TokioRuntimeProvider};
 
 /// RuntimeProvider defines which async runtime that handles IO and timers.
@@ -277,12 +279,12 @@ pub trait RuntimeProvider: Clone + Send + Sync + Unpin + 'static {
 }
 
 /// Noop trait for when the `quinn` dependency is not available.
-#[cfg(not(any(feature = "dns-over-quic", feature = "dns-over-h3")))]
+#[cfg(not(feature = "__quic"))]
 pub trait QuicSocketBinder {}
 
 /// Create a UDP socket for QUIC usage.
 /// This trait is designed for customization.
-#[cfg(any(feature = "dns-over-quic", feature = "dns-over-h3"))]
+#[cfg(feature = "__quic")]
 pub trait QuicSocketBinder {
     /// Create a UDP socket for QUIC usage.
     fn bind_quic(
@@ -312,7 +314,7 @@ pub trait Executor {
     fn block_on<F: Future>(&mut self, future: F) -> F::Output;
 }
 
-#[cfg(feature = "tokio-runtime")]
+#[cfg(feature = "tokio")]
 impl Executor for Runtime {
     fn new() -> Self {
         Self::new().expect("failed to create tokio runtime")
@@ -339,11 +341,11 @@ pub trait Time {
 }
 
 /// New type which is implemented using tokio::time::{Delay, Timeout}
-#[cfg(any(test, feature = "tokio-runtime"))]
+#[cfg(any(test, feature = "tokio"))]
 #[derive(Clone, Copy, Debug)]
 pub struct TokioTime;
 
-#[cfg(any(test, feature = "tokio-runtime"))]
+#[cfg(any(test, feature = "tokio"))]
 #[async_trait]
 impl Time for TokioTime {
     async fn delay_for(duration: Duration) {

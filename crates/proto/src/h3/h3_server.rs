@@ -7,7 +7,8 @@
 
 //! HTTP/3 related server items
 
-use std::{io, net::SocketAddr, sync::Arc};
+use alloc::sync::Arc;
+use std::{io, net::SocketAddr};
 
 use bytes::Bytes;
 use h3::server::{Connection, RequestStream};
@@ -19,7 +20,7 @@ use rustls::server::ResolvesServerCert;
 use rustls::server::ServerConfig as TlsServerConfig;
 use rustls::version::TLS13;
 
-use crate::{error::ProtoError, udp::UdpSocket};
+use crate::{error::ProtoError, rustls::default_provider, udp::UdpSocket};
 
 use super::ALPN_H3;
 
@@ -44,13 +45,11 @@ impl H3Server {
         socket: tokio::net::UdpSocket,
         server_cert_resolver: Arc<dyn ResolvesServerCert>,
     ) -> Result<Self, ProtoError> {
-        let mut config = TlsServerConfig::builder_with_provider(Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_protocol_versions(&[&TLS13])
-        .expect("TLS1.3 not supported")
-        .with_no_client_auth()
-        .with_cert_resolver(server_cert_resolver);
+        let mut config = TlsServerConfig::builder_with_provider(Arc::new(default_provider()))
+            .with_protocol_versions(&[&TLS13])
+            .expect("TLS1.3 not supported")
+            .with_no_client_auth()
+            .with_cert_resolver(server_cert_resolver);
 
         config.alpn_protocols = vec![ALPN_H3.to_vec()];
 

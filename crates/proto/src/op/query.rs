@@ -16,8 +16,9 @@
 
 //! Query struct for looking up resource records
 
-use std::fmt;
-use std::fmt::{Display, Formatter};
+#[cfg(test)]
+use alloc::vec::Vec;
+use core::fmt::{self, Display, Formatter};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -188,22 +189,33 @@ pub struct QueryParts {
 
 impl From<Query> for QueryParts {
     fn from(q: Query) -> Self {
-        cfg_if::cfg_if! {
-            if #[cfg(feature = "mdns")] {
-                let Query {
-                    name,
-                    query_type,
-                    query_class,
-                    mdns_unicast_response,
-                } = q;
-            } else {
-                let Query {
-                    name,
-                    query_type,
-                    query_class,
-                } = q;
-            }
+        let Query {
+            name,
+            query_type,
+            query_class,
+            #[cfg(feature = "mdns")]
+            mdns_unicast_response,
+        } = q;
+
+        Self {
+            name,
+            query_type,
+            query_class,
+            #[cfg(feature = "mdns")]
+            mdns_unicast_response,
         }
+    }
+}
+
+impl From<QueryParts> for Query {
+    fn from(p: QueryParts) -> Self {
+        let QueryParts {
+            name,
+            query_type,
+            query_class,
+            #[cfg(feature = "mdns")]
+            mdns_unicast_response,
+        } = p;
 
         Self {
             name,
@@ -321,7 +333,7 @@ fn test_read_and_emit() {
 #[test]
 fn test_mdns_unicast_response_bit_handling() {
     const QCLASS_OFFSET: usize = 1 /* empty name */ +
-        std::mem::size_of::<u16>() /* query_type */;
+        core::mem::size_of::<u16>() /* query_type */;
 
     let mut query = Query::new();
     query.set_mdns_unicast_response(true);
