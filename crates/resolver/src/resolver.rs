@@ -23,7 +23,7 @@ use crate::error::{ResolveError, ResolveErrorKind};
 use crate::hosts::Hosts;
 use crate::lookup::{self, Lookup, LookupEither};
 use crate::lookup_ip::{LookupIp, LookupIpFuture};
-#[cfg(feature = "tokio-runtime")]
+#[cfg(feature = "tokio")]
 use crate::name_server::TokioConnectionProvider;
 use crate::name_server::{ConnectionProvider, NameServerPool};
 use crate::proto::op::Query;
@@ -53,7 +53,7 @@ pub struct Resolver<P: ConnectionProvider> {
 }
 
 /// A Resolver used with Tokio
-#[cfg(feature = "tokio-runtime")]
+#[cfg(feature = "tokio")]
 pub type TokioResolver = Resolver<TokioConnectionProvider>;
 
 macro_rules! lookup_fn {
@@ -89,7 +89,7 @@ macro_rules! lookup_fn {
     };
 }
 
-#[cfg(feature = "tokio-runtime")]
+#[cfg(feature = "tokio")]
 impl TokioResolver {
     /// Construct a new Tokio based `Resolver` with the provided configuration.
     ///
@@ -191,6 +191,7 @@ impl<P: ConnectionProvider> Resolver<P> {
         let mut request_opts = DnsRequestOptions::default();
         request_opts.recursion_desired = self.options.recursion_desired;
         request_opts.use_edns = self.options.edns0;
+        request_opts.case_randomization = self.options.case_randomization;
 
         request_opts
     }
@@ -528,7 +529,7 @@ where
 }
 
 /// Unit tests compatible with different runtime.
-#[cfg(all(test, any(feature = "async-std", feature = "tokio-runtime")))]
+#[cfg(all(test, any(feature = "async-std", feature = "tokio")))]
 pub(crate) mod testing {
     use std::{net::*, str::FromStr};
 
@@ -1022,7 +1023,7 @@ pub(crate) mod testing {
 }
 
 #[cfg(test)]
-#[cfg(feature = "tokio-runtime")]
+#[cfg(feature = "tokio")]
 #[allow(clippy::extra_unused_type_parameters)]
 mod tests {
     use std::net::{IpAddr, Ipv4Addr};

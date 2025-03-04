@@ -39,33 +39,58 @@ sqlite = ["rusqlite"]
 blocklist = ["resolver"]
 toml = ["dep:toml"]
 
-dns-over-https-rustls = [
-    "hickory-proto/dns-over-https-rustls",
-    "hickory-resolver?/dns-over-https-rustls",
-    "dns-over-rustls",
-    "dep:h2",
-    "dep:http",
-    "dep:tokio-rustls",
+tls-aws-lc-rs = [
+    "hickory-proto/tls-aws-lc-rs",
+    "hickory-resolver?/tls-aws-lc-rs",
+    "__tls",
+]
+https-aws-lc-rs = [
+    "hickory-proto/https-aws-lc-rs",
+    "hickory-resolver?/https-aws-lc-rs",
+    "tls-aws-lc-rs",
+    "__https",
+]
+quic-aws-lc-rs = [
+    "hickory-proto/quic-aws-lc-rs",
+    "hickory-resolver?/quic-aws-lc-rs",
+    "tls-aws-lc-rs",
+    "__quic",
+]
+h3-aws-lc-rs = [
+    "hickory-proto/h3-aws-lc-rs",
+    "hickory-resolver?/h3-aws-lc-rs",
+    "quic-aws-lc-rs",
+    "__h3",
 ]
 
-dns-over-rustls = [
-    "dep:rustls",
-    "hickory-proto/dns-over-rustls",
-    "hickory-resolver?/dns-over-rustls",
-    "dep:tokio-rustls",
+tls-ring = [
+    "hickory-proto/tls-ring",
+    "hickory-resolver?/tls-ring",
+    "__tls",
 ]
-dns-over-quic = [
-    "dns-over-rustls",
-    "hickory-proto/dns-over-quic",
-    "hickory-resolver?/dns-over-quic",
+https-ring = [
+    "hickory-proto/https-ring",
+    "hickory-resolver?/https-ring",
+    "tls-ring",
+    "__https",
 ]
-dns-over-h3 = [
-    "dns-over-rustls",
-    "dep:h3",
-    "dep:h3-quinn",
-    "hickory-proto/dns-over-h3",
-    "hickory-resolver?/dns-over-h3",
+quic-ring = [
+    "hickory-proto/quic-ring",
+    "hickory-resolver?/quic-ring",
+    "tls-ring",
+    "__quic",
 ]
+h3-ring = [
+    "hickory-proto/h3-ring",
+    "hickory-resolver?/h3-ring",
+    "quic-ring",
+    "__h3",
+]
+
+__tls = ["dep:rustls", "dep:tokio-rustls"]
+__https = ["dep:h2", "dep:http", "__tls"]
+__quic = ["__tls"]
+__h3 = ["dep:h3", "dep:h3-quinn", "__quic"]
 
 dnssec-aws-lc-rs = ["hickory-proto/dnssec-aws-lc-rs", "hickory-recursor?/dnssec-aws-lc-rs", "hickory-resolver?/dnssec-aws-lc-rs", "serde/rc", "__dnssec"]
 dnssec-ring = ["hickory-proto/dnssec-ring", "hickory-recursor?/dnssec-ring", "hickory-resolver?/dnssec-ring", "serde/rc", "__dnssec"]
@@ -103,9 +128,9 @@ tracing.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "sync"] }
 tokio-rustls = { workspace = true, optional = true }
 tokio-util.workspace = true
-hickory-proto = { workspace = true, features = ["serde", "text-parsing", "tokio-runtime"] }
+hickory-proto = { workspace = true, features = ["serde", "text-parsing", "tokio"] }
 hickory-recursor = { workspace = true, features = ["serde"], optional = true }
-hickory-resolver = { workspace = true, features = ["serde", "system-config", "tokio-runtime"], optional = true }
+hickory-resolver = { workspace = true, features = ["serde", "system-config", "tokio"], optional = true }
 
 [dev-dependencies]
 futures-executor = { workspace = true, default-features = false, features = ["std"] }
@@ -125,3 +150,4 @@ workspace = true
 [package.metadata.cargo-all-features]
 skip_optional_dependencies = true
 max_combination_size = 2
+denylist = ["__tls", "__https", "__quic", "__h3", "__dnssec"]

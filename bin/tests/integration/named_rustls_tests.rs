@@ -6,7 +6,7 @@
 // copied, modified, or distributed except according to those terms.
 
 #![cfg(not(windows))]
-#![cfg(feature = "dns-over-rustls")]
+#![cfg(feature = "__tls")]
 
 use std::env;
 use std::fs::File;
@@ -22,7 +22,7 @@ use tokio::runtime::Runtime;
 use crate::server_harness::{named_test_harness, query_a};
 use hickory_client::client::Client;
 use hickory_proto::runtime::TokioRuntimeProvider;
-use hickory_proto::rustls::tls_client_connect;
+use hickory_proto::rustls::{default_provider, tls_client_connect};
 use hickory_proto::xfer::Protocol;
 
 #[test]
@@ -51,13 +51,11 @@ fn test_example_tls_toml_startup() {
                 .add(CertificateDer::from(cert_der))
                 .expect("bad certificate");
 
-            let config = ClientConfig::builder_with_provider(Arc::new(
-                rustls::crypto::ring::default_provider(),
-            ))
-            .with_safe_default_protocol_versions()
-            .unwrap()
-            .with_root_certificates(root_store)
-            .with_no_client_auth();
+            let config = ClientConfig::builder_with_provider(Arc::new(default_provider()))
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_root_certificates(root_store)
+                .with_no_client_auth();
 
             let config = Arc::new(config);
 

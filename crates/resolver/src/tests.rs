@@ -1,8 +1,8 @@
-#[cfg(feature = "tokio-runtime")]
+#[cfg(feature = "tokio")]
 use test_support::subscribe;
 
 // Keep this in sync with the example in the README.
-#[cfg(feature = "tokio-runtime")]
+#[cfg(feature = "tokio")]
 #[tokio::test]
 async fn readme_example() {
     subscribe();
@@ -30,7 +30,7 @@ async fn readme_example() {
 }
 
 // Keep this in sync with the example in the README.
-#[cfg(feature = "dns-over-rustls")]
+#[cfg(feature = "__tls")]
 #[test]
 fn readme_tls() {
     use crate::Resolver;

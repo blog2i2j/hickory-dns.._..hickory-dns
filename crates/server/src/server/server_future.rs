@@ -12,23 +12,25 @@ use std::{
 };
 
 use futures_util::{FutureExt, StreamExt};
-use hickory_proto::{op::MessageType, rr::Record, runtime::TokioRuntimeProvider};
 use ipnet::IpNet;
-#[cfg(feature = "dns-over-rustls")]
+#[cfg(feature = "__tls")]
 use rustls::{ServerConfig, server::ResolvesServerCert};
-#[cfg(feature = "dns-over-rustls")]
+#[cfg(feature = "__tls")]
 use tokio::time::timeout;
 use tokio::{net, task::JoinSet};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
+#[cfg(feature = "__tls")]
+use crate::proto::rustls::default_provider;
 use crate::{
     access::AccessControl,
     authority::{MessageRequest, MessageResponseBuilder, Queries},
     proto::{
         BufDnsStreamHandle, ProtoError,
-        op::{Header, LowerQuery, Query, ResponseCode},
-        runtime::iocompat::AsyncIoTokioAsStd,
+        op::{Header, LowerQuery, MessageType, Query, ResponseCode},
+        rr::Record,
+        runtime::{TokioRuntimeProvider, iocompat::AsyncIoTokioAsStd},
         serialize::binary::{BinDecodable, BinDecoder},
         tcp::TcpStream,
         udp::UdpStream,
@@ -274,7 +276,7 @@ impl<T: RequestHandler> ServerFuture<T> {
     ///               possible to create long-lived queries, but these should be from trusted sources
     ///               only, this would require some type of whitelisting.
     /// * `tls_config` - rustls server config
-    #[cfg(feature = "dns-over-rustls")]
+    #[cfg(feature = "__tls")]
     pub fn register_tls_listener_with_tls_config(
         &mut self,
         listener: net::TcpListener,
@@ -400,7 +402,7 @@ impl<T: RequestHandler> ServerFuture<T> {
     ///               possible to create long-lived queries, but these should be from trusted sources
     ///               only, this would require some type of whitelisting.
     /// * `server_cert_resolver` - resolver for the certificate and key used to announce to clients
-    #[cfg(feature = "dns-over-rustls")]
+    #[cfg(feature = "__tls")]
     pub fn register_tls_listener(
         &mut self,
         listener: net::TcpListener,
@@ -411,7 +413,7 @@ impl<T: RequestHandler> ServerFuture<T> {
         Self::register_tls_listener_with_tls_config(self, listener, timeout, Arc::new(config))
     }
 
-    /// Register a TcpListener for HTTPS (h2) to the Server for supporting DoH (dns-over-https). The TcpListener should already be bound to either an
+    /// Register a TcpListener for HTTPS (h2) to the Server for supporting DoH (DNS-over-HTTPS). The TcpListener should already be bound to either an
     /// IPv6 or an IPv4 address.
     ///
     /// To make the server more resilient to DOS issues, there is a timeout. Care should be taken
@@ -424,7 +426,7 @@ impl<T: RequestHandler> ServerFuture<T> {
     ///               possible to create long-lived queries, but these should be from trusted sources
     ///               only, this would require some type of whitelisting.
     /// * `server_cert_resolver` - resolver for the certificate and key used to announce to clients
-    #[cfg(feature = "dns-over-https-rustls")]
+    #[cfg(feature = "__https")]
     pub fn register_https_listener(
         &mut self,
         listener: net::TcpListener,
@@ -528,7 +530,7 @@ impl<T: RequestHandler> ServerFuture<T> {
         Ok(())
     }
 
-    /// Register a UdpSocket to the Server for supporting DoQ (dns-over-quic). The UdpSocket should already be bound to either an
+    /// Register a UdpSocket to the Server for supporting DoQ (DNS-over-QUIC). The UdpSocket should already be bound to either an
     /// IPv6 or an IPv4 address.
     ///
     /// To make the server more resilient to DOS issues, there is a timeout. Care should be taken
@@ -541,7 +543,7 @@ impl<T: RequestHandler> ServerFuture<T> {
     ///               possible to create long-lived queries, but these should be from trusted sources
     ///               only, this would require some type of whitelisting.
     /// * `server_cert_resolver` - resolver for certificate and key used to announce to clients
-    #[cfg(feature = "dns-over-quic")]
+    #[cfg(feature = "__quic")]
     pub fn register_quic_listener(
         &mut self,
         socket: net::UdpSocket,
@@ -625,7 +627,7 @@ impl<T: RequestHandler> ServerFuture<T> {
         Ok(())
     }
 
-    /// Register a UdpSocket to the Server for supporting DoH3 (dns-over-h3). The UdpSocket should already be bound to either an
+    /// Register a UdpSocket to the Server for supporting DoH3 (DNS-over-HTTP/3). The UdpSocket should already be bound to either an
     /// IPv6 or an IPv4 address.
     ///
     /// To make the server more resilient to DOS issues, there is a timeout. Care should be taken
@@ -638,7 +640,7 @@ impl<T: RequestHandler> ServerFuture<T> {
     ///               possible to create long-lived queries, but these should be from trusted sources
     ///               only, this would require some type of whitelisting.
     /// * `server_cert_resolver` - resolver for certificate and key used to announce to clients
-    #[cfg(feature = "dns-over-h3")]
+    #[cfg(feature = "__h3")]
     pub fn register_h3_listener(
         &mut self,
         socket: net::UdpSocket,
@@ -731,6 +733,14 @@ impl<T: RequestHandler> ServerFuture<T> {
         block_until_done(&mut self.join_set).await
     }
 
+    /// Returns a reference to the [`CancellationToken`] used to gracefully shut down the server.
+    ///
+    /// Once cancellation is requested, all background tasks will stop accepting new connections,
+    /// and `block_until_done()` will complete once all tasks have terminated.
+    pub fn shutdown_token(&self) -> &CancellationToken {
+        &self.shutdown_token
+    }
+
     /// This will run until all background tasks complete. If one or more tasks return an error,
     /// one will be chosen as the returned error for this future.
     pub async fn block_until_done(&mut self) -> Result<(), ProtoError> {
@@ -794,22 +804,21 @@ pub(crate) async fn handle_raw_request<T: RequestHandler>(
     .await;
 }
 
-#[cfg(feature = "dns-over-rustls")]
+#[cfg(feature = "__tls")]
 fn tls_server_config(
     protocol: &[u8],
     server_cert_resolver: Arc<dyn ResolvesServerCert>,
 ) -> io::Result<ServerConfig> {
-    let mut config =
-        ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-            .with_safe_default_protocol_versions()
-            .map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("error creating TLS acceptor: {e}"),
-                )
-            })?
-            .with_no_client_auth()
-            .with_cert_resolver(server_cert_resolver);
+    let mut config = ServerConfig::builder_with_provider(Arc::new(default_provider()))
+        .with_safe_default_protocol_versions()
+        .map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("error creating TLS acceptor: {e}"),
+            )
+        })?
+        .with_no_client_auth()
+        .with_cert_resolver(server_cert_resolver);
 
     config.alpn_protocols = vec![protocol.to_vec()];
     Ok(config)
@@ -1076,9 +1085,8 @@ mod tests {
     use super::*;
     use crate::authority::Catalog;
     use futures_util::future;
-    #[cfg(feature = "dns-over-rustls")]
+    #[cfg(feature = "__tls")]
     use rustls::{
-        crypto::ring::default_provider,
         pki_types::{CertificateDer, PrivateKeyDer},
         sign::{CertifiedKey, SingleCertAndKey},
     };
@@ -1151,13 +1159,13 @@ mod tests {
         udp_std_addr: SocketAddr,
         tcp_addr: SocketAddr,
         tcp_std_addr: SocketAddr,
-        #[cfg(feature = "dns-over-rustls")]
+        #[cfg(feature = "__tls")]
         rustls_addr: SocketAddr,
-        #[cfg(feature = "dns-over-https-rustls")]
+        #[cfg(feature = "__https")]
         https_rustls_addr: SocketAddr,
-        #[cfg(feature = "dns-over-quic")]
+        #[cfg(feature = "__quic")]
         quic_addr: SocketAddr,
-        #[cfg(feature = "dns-over-h3")]
+        #[cfg(feature = "__h3")]
         h3_addr: SocketAddr,
     }
 
@@ -1167,13 +1175,13 @@ mod tests {
             let udp_std = UdpSocket::bind("127.0.0.1:0").await.unwrap();
             let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let tcp_std = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            #[cfg(feature = "dns-over-rustls")]
+            #[cfg(feature = "__tls")]
             let rustls = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            #[cfg(feature = "dns-over-https-rustls")]
+            #[cfg(feature = "__https")]
             let https_rustls = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            #[cfg(feature = "dns-over-quic")]
+            #[cfg(feature = "__quic")]
             let quic = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-            #[cfg(feature = "dns-over-h3")]
+            #[cfg(feature = "__h3")]
             let h3 = UdpSocket::bind("127.0.0.1:0").await.unwrap();
 
             Self {
@@ -1181,13 +1189,13 @@ mod tests {
                 udp_std_addr: udp_std.local_addr().unwrap(),
                 tcp_addr: tcp.local_addr().unwrap(),
                 tcp_std_addr: tcp_std.local_addr().unwrap(),
-                #[cfg(feature = "dns-over-rustls")]
+                #[cfg(feature = "__tls")]
                 rustls_addr: rustls.local_addr().unwrap(),
-                #[cfg(feature = "dns-over-https-rustls")]
+                #[cfg(feature = "__https")]
                 https_rustls_addr: https_rustls.local_addr().unwrap(),
-                #[cfg(feature = "dns-over-quic")]
+                #[cfg(feature = "__quic")]
                 quic_addr: quic.local_addr().unwrap(),
-                #[cfg(feature = "dns-over-h3")]
+                #[cfg(feature = "__h3")]
                 h3_addr: h3.local_addr().unwrap(),
             }
         }
@@ -1208,7 +1216,7 @@ mod tests {
                 )
                 .unwrap();
 
-            #[cfg(feature = "dns-over-rustls")]
+            #[cfg(feature = "__tls")]
             {
                 let cert_key = rustls_cert_key();
                 server
@@ -1220,7 +1228,7 @@ mod tests {
                     .unwrap();
             }
 
-            #[cfg(feature = "dns-over-https-rustls")]
+            #[cfg(feature = "__https")]
             {
                 let cert_key = rustls_cert_key();
                 server
@@ -1234,7 +1242,7 @@ mod tests {
                     .unwrap();
             }
 
-            #[cfg(feature = "dns-over-quic")]
+            #[cfg(feature = "__quic")]
             {
                 let cert_key = rustls_cert_key();
                 server
@@ -1247,7 +1255,7 @@ mod tests {
                     .unwrap();
             }
 
-            #[cfg(feature = "dns-over-h3")]
+            #[cfg(feature = "__h3")]
             {
                 let cert_key = rustls_cert_key();
                 server
@@ -1266,18 +1274,18 @@ mod tests {
             UdpSocket::bind(self.udp_std_addr).await.unwrap();
             TcpListener::bind(self.tcp_addr).await.unwrap();
             TcpListener::bind(self.tcp_std_addr).await.unwrap();
-            #[cfg(feature = "dns-over-rustls")]
+            #[cfg(feature = "__tls")]
             TcpListener::bind(self.rustls_addr).await.unwrap();
-            #[cfg(feature = "dns-over-https-rustls")]
+            #[cfg(feature = "__https")]
             TcpListener::bind(self.https_rustls_addr).await.unwrap();
-            #[cfg(feature = "dns-over-quic")]
+            #[cfg(feature = "__quic")]
             UdpSocket::bind(self.quic_addr).await.unwrap();
-            #[cfg(feature = "dns-over-h3")]
+            #[cfg(feature = "__h3")]
             UdpSocket::bind(self.h3_addr).await.unwrap();
         }
     }
 
-    #[cfg(feature = "dns-over-rustls")]
+    #[cfg(feature = "__tls")]
     fn rustls_cert_key() -> Arc<dyn ResolvesServerCert> {
         use rustls::pki_types::pem::PemObject;
         use std::env;

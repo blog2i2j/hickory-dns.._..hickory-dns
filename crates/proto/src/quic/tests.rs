@@ -7,12 +7,13 @@
 
 #![allow(clippy::print_stdout)] // this is a test module
 
-use std::{env, net::SocketAddr, path::Path, str::FromStr, sync::Arc};
+use alloc::{borrow::ToOwned, string::ToString, sync::Arc, vec::Vec};
+use core::str::FromStr;
+use std::{env, net::SocketAddr, path::Path, println};
 
 use futures_util::StreamExt;
 use rustls::{
     ClientConfig, KeyLogFile,
-    crypto::ring::default_provider,
     pki_types::{
         CertificateDer, PrivateKeyDer,
         pem::{self, PemObject},
@@ -25,6 +26,7 @@ use crate::{
     op::{Message, Query},
     quic::QuicClientStreamBuilder,
     rr::{Name, RecordType},
+    rustls::default_provider,
     xfer::DnsRequestSender,
 };
 
@@ -89,12 +91,11 @@ async fn test_quic_stream() {
     let (_, ignored) = roots.add_parsable_certificates(ca.into_iter());
     assert_eq!(ignored, 0);
 
-    let mut client_config =
-        ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-            .with_safe_default_protocol_versions()
-            .unwrap()
-            .with_root_certificates(roots)
-            .with_no_client_auth();
+    let mut client_config = ClientConfig::builder_with_provider(Arc::new(default_provider()))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
 
     client_config.key_log = Arc::new(KeyLogFile::new());
 
