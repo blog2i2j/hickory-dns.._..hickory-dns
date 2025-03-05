@@ -42,7 +42,7 @@ jobs:
       - uses: extractions/setup-just@v2
 
       - name: install cargo-binstall
-        uses: cargo-bins/cargo-binstall@v1.11.1
+        uses: cargo-bins/cargo-binstall@v1.11.2
       - name: install cargo-workspaces
         run: cargo binstall cargo-workspaces -y --version ${{ env.CARGO_WS_VERSION }}
         env:
@@ -109,10 +109,14 @@ jobs:
           [
             default,
             no-default-features,
-            dns-over-rustls,
-            dns-over-https-rustls,
-            dns-over-quic,
-            dns-over-h3,
+            tls-aws-lc-rs,
+            https-aws-lc-rs,
+            quic-aws-lc-rs,
+            h3-aws-lc-rs,
+            tls-ring,
+            https-ring,
+            quic-ring,
+            h3-ring,
             dnssec-aws-lc-rs,
             dnssec-ring,
             async-std,
@@ -128,7 +132,7 @@ jobs:
       - uses: extractions/setup-just@v2
 
       - name: install cargo-binstall
-        uses: cargo-bins/cargo-binstall@v1.11.1
+        uses: cargo-bins/cargo-binstall@v1.11.2
       - name: install cargo-workspaces
         run: cargo binstall cargo-workspaces -y --version ${{ env.CARGO_WS_VERSION }}
         env:
@@ -181,7 +185,7 @@ jobs:
       - uses: extractions/setup-just@v2
 
       - name: install cargo-binstall
-        uses: cargo-bins/cargo-binstall@v1.11.1
+        uses: cargo-bins/cargo-binstall@v1.11.2
       - name: install cargo-workspaces
         run: cargo binstall cargo-workspaces -y --version ${{ env.CARGO_WS_VERSION }}
         env:
@@ -221,7 +225,7 @@ jobs:
       - uses: extractions/setup-just@v2
 
       - name: install cargo-binstall
-        uses: cargo-bins/cargo-binstall@v1.11.1
+        uses: cargo-bins/cargo-binstall@v1.11.2
       - name: install cargo-workspaces
         run: cargo binstall cargo-workspaces -y --version ${{ env.CARGO_WS_VERSION }}
         env:

@@ -5,13 +5,14 @@
 // https://opensource.org/licenses/MIT>, at your option. This file may not be
 // copied, modified, or distributed except according to those terms.
 
+use alloc::boxed::Box;
+use alloc::sync::Arc;
+use core::future::poll_fn;
+use core::pin::Pin;
+use core::task::{Context, Poll};
 use std::collections::HashSet;
-use std::future::poll_fn;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::pin::Pin;
-use std::sync::Arc;
-use std::task::{Context, Poll};
 
 use async_trait::async_trait;
 use futures_util::stream::Stream;
@@ -339,7 +340,7 @@ impl<P: RuntimeProvider> Future for NextRandomUdpSocket<P> {
 
 const ATTEMPT_RANDOM: usize = 10;
 
-#[cfg(feature = "tokio-runtime")]
+#[cfg(feature = "tokio")]
 #[async_trait]
 impl UdpSocket for tokio::net::UdpSocket {
     /// sets up up a "client" udp connection that will only receive packets from the associated address
@@ -369,7 +370,7 @@ impl UdpSocket for tokio::net::UdpSocket {
     }
 }
 
-#[cfg(feature = "tokio-runtime")]
+#[cfg(feature = "tokio")]
 #[async_trait]
 impl DnsUdpSocket for tokio::net::UdpSocket {
     type Time = crate::runtime::TokioTime;
@@ -397,7 +398,7 @@ impl DnsUdpSocket for tokio::net::UdpSocket {
 }
 
 #[cfg(test)]
-#[cfg(feature = "tokio-runtime")]
+#[cfg(feature = "tokio")]
 mod tests {
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 

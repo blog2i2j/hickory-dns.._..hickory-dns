@@ -7,7 +7,7 @@
 
 //! NSEC record types
 
-use std::fmt;
+use alloc::{fmt, string::ToString, vec::Vec};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Deserializer, Serialize};
@@ -409,7 +409,7 @@ impl fmt::Display for NSEC3 {
             flags = self.flags(),
             iterations = self.iterations,
             salt = salt,
-            owner = data_encoding::BASE32_NOPAD.encode(&self.next_hashed_owner_name)
+            owner = data_encoding::BASE32_DNSSEC.encode(&self.next_hashed_owner_name)
         )?;
 
         for ty in &self.type_bit_maps {
@@ -467,6 +467,8 @@ impl<'de> Deserialize<'de> for NSEC3 {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::dbg_macro, clippy::print_stdout)]
+
+    use std::println;
 
     use super::*;
     use crate::dnssec::rdata::RecordType;

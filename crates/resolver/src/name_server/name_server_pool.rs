@@ -119,6 +119,11 @@ where
         }
     }
 
+    /// Returns the pool's options.
+    pub fn options(&self) -> &ResolverOpts {
+        &self.options
+    }
+
     #[cfg(test)]
     #[allow(dead_code)]
     fn from_nameservers_test(
@@ -209,7 +214,11 @@ where
                     debug!("truncated response received, retrying over TCP");
                     Err(ProtoError::from("received truncated response"))
                 }
-                Err(e) if (opts.try_tcp_on_error && e.is_io()) || e.is_no_connections() => {
+                Err(e)
+                    if (opts.try_tcp_on_error && e.is_io())
+                        || e.is_no_connections()
+                        || matches!(&*e.kind, ProtoErrorKind::QueryCaseMismatch) =>
+                {
                     debug!("error from UDP, retrying over TCP: {}", e);
                     Err(e)
                 }
@@ -261,19 +270,8 @@ where
         let count = conns.len().min(opts.num_concurrent_reqs.max(1));
 
         // Shuffe DNS NameServers to avoid overloads to the first configured ones
-        if opts.shuffle_dns_servers {
-            for _ in 0..count {
-                let idx = rand::random_range(0..conns.len());
-
-                // UNWRAP: swap_remove has an implicit panicking bounds check. This should
-                // never fail because we check that conns is not empty and generate the idx
-                // to explicitly be in range.
-                par_conns.push(conns.swap_remove(idx));
-            }
-        } else {
-            for conn in conns.drain(..count) {
-                par_conns.push(conn);
-            }
+        for conn in conns.drain(..count) {
+            par_conns.push(conn);
         }
 
         if par_conns.is_empty() {
@@ -378,7 +376,7 @@ impl Stream for Local {
 }
 
 #[cfg(test)]
-#[cfg(feature = "tokio-runtime")]
+#[cfg(feature = "tokio")]
 mod tests {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use std::str::FromStr;
