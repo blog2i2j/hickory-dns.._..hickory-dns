@@ -1,8 +1,8 @@
-#[cfg(feature = "tokio-runtime")]
+#[cfg(feature = "tokio")]
 use test_support::subscribe;
 
 // Keep this in sync with the example in the README.
-#[cfg(feature = "tokio-runtime")]
+#[cfg(feature = "tokio")]
 #[tokio::test]
 async fn readme_example() {
     subscribe();
@@ -12,11 +12,11 @@ async fn readme_example() {
     use crate::name_server::TokioConnectionProvider;
 
     // Construct a new Resolver with default configuration options
-    let resolver = Resolver::new(
+    let resolver = Resolver::builder_with_config(
         ResolverConfig::default(),
-        ResolverOpts::default(),
         TokioConnectionProvider::default(),
-    );
+    )
+    .build();
 
     // On Unix/Posix systems, this will read the /etc/resolv.conf
     // let resolver = Resolver::from_system_conf(TokioConnectionProvider::default()).unwrap();
@@ -30,7 +30,7 @@ async fn readme_example() {
 }
 
 // Keep this in sync with the example in the README.
-#[cfg(feature = "dns-over-rustls")]
+#[cfg(feature = "__tls")]
 #[test]
 fn readme_tls() {
     use crate::Resolver;
@@ -38,11 +38,11 @@ fn readme_tls() {
     use crate::name_server::TokioConnectionProvider;
 
     // Construct a new Resolver with default configuration options
-    let resolver = Resolver::new(
+    let resolver = Resolver::builder_with_config(
         ResolverConfig::cloudflare_tls(),
-        ResolverOpts::default(),
         TokioConnectionProvider::default(),
-    );
+    )
+    .build();
 
     let _ = resolver;
 }
