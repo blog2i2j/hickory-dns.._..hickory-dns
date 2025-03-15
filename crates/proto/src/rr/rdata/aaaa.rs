@@ -23,8 +23,16 @@
 //!   resource record in network byte order (high-order byte first).
 //! ```
 
+#[cfg(not(feature = "std"))]
+use core::net::AddrParseError;
+use core::{fmt, ops::Deref, str};
+#[cfg(feature = "std")]
+use std::net::AddrParseError;
+
+#[cfg(not(feature = "std"))]
+pub use core::net::Ipv6Addr;
+#[cfg(feature = "std")]
 pub use std::net::Ipv6Addr;
-use std::{fmt, net::AddrParseError, ops::Deref, str};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -153,7 +161,8 @@ impl str::FromStr for AAAA {
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
+    use alloc::vec::Vec;
+    use core::str::FromStr;
 
     use super::*;
     use crate::serialize::binary::bin_tests::{test_emit_data_set, test_read_data_set};

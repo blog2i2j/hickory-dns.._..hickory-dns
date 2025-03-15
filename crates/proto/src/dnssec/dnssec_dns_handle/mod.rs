@@ -7,11 +7,10 @@
 
 //! The `DnssecDnsHandle` is used to validate all DNS responses for correct DNSSEC signatures.
 
+use alloc::{borrow::ToOwned, boxed::Box, string::ToString, sync::Arc, vec::Vec};
+use core::{clone::Clone, pin::Pin};
 use std::{
-    clone::Clone,
     collections::{HashMap, HashSet},
-    pin::Pin,
-    sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -24,8 +23,8 @@ use tracing::{debug, trace, warn};
 
 use crate::{
     dnssec::{
-        Algorithm, Proof, ProofError, ProofErrorKind, TrustAnchor, Verifier,
-        rdata::{DNSKEY, DNSSECRData, DS, RRSIG},
+        Algorithm, Proof, ProofError, ProofErrorKind, TrustAnchors, Verifier,
+        rdata::{DNSKEY, DS, RRSIG},
     },
     error::{ProtoError, ProtoErrorKind},
     op::{Edns, Message, OpCode, Query},
@@ -38,7 +37,7 @@ use self::rrset::Rrset;
 mod nsec3_validation;
 use nsec3_validation::verify_nsec3;
 
-use super::PublicKey;
+use super::rdata::NSEC;
 
 /// Performs DNSSEC validation of all DNS responses from the wrapped DnsHandle
 ///
@@ -52,7 +51,7 @@ where
     H: DnsHandle + Unpin + 'static,
 {
     handle: H,
-    trust_anchor: Arc<TrustAnchor>,
+    trust_anchor: Arc<TrustAnchors>,
     request_depth: usize,
     minimum_key_len: usize,
     minimum_algorithm: Algorithm, // used to prevent down grade attacks...
@@ -69,7 +68,7 @@ where
     /// # Arguments
     /// * `handle` - handle to use for all connections to a remote server.
     pub fn new(handle: H) -> Self {
-        Self::with_trust_anchor(handle, Arc::new(TrustAnchor::default()))
+        Self::with_trust_anchor(handle, Arc::new(TrustAnchors::default()))
     }
 
     /// Create a new DnssecDnsHandle wrapping the specified handle.
@@ -79,7 +78,7 @@ where
     /// # Arguments
     /// * `handle` - handle to use for all connections to a remote server.
     /// * `trust_anchor` - custom DNSKEYs that will be trusted, can be used to pin trusted keys.
-    pub fn with_trust_anchor(handle: H, trust_anchor: Arc<TrustAnchor>) -> Self {
+    pub fn with_trust_anchor(handle: H, trust_anchor: Arc<TrustAnchors>) -> Self {
         Self {
             handle,
             trust_anchor,
@@ -244,7 +243,12 @@ fn check_nsec(verified_message: DnsResponse, query: &Query) -> Result<DnsRespons
     let nsecs = verified_message
         .name_servers()
         .iter()
-        .filter(|rr| is_dnssec(rr, RecordType::NSEC))
+        .filter_map(|rr| {
+            rr.data()
+                .as_dnssec()?
+                .as_nsec()
+                .map(|data| (rr.name(), data))
+        })
         .collect::<Vec<_>>();
 
     // Both NSEC and NSEC3 records cannot coexist during
@@ -673,10 +677,7 @@ where
     let pub_key = dns_key.public_key();
 
     // Checks to see if the key is valid against the registered root certificates
-    if handle
-        .trust_anchor
-        .contains_dnskey_bytes(pub_key.public_bytes(), pub_key.algorithm())
-    {
+    if handle.trust_anchor.contains(pub_key) {
         debug!(
             "validated dnskey with trust_anchor: {}, {dns_key}",
             rr.name(),
@@ -1271,7 +1272,7 @@ enum RrsigValidity {
 /// ```
 #[allow(clippy::blocks_in_conditions)]
 #[doc(hidden)]
-pub fn verify_nsec(query: &Query, soa_name: &Name, nsecs: &[&Record]) -> Proof {
+pub fn verify_nsec(query: &Query, soa_name: &Name, nsecs: &[(&Name, &NSEC)]) -> Proof {
     // TODO: consider converting this to Result, and giving explicit reason for the failure
 
     // DS queries resulting in NoData responses with accompanying NSEC records can prove that an
@@ -1286,34 +1287,22 @@ pub fn verify_nsec(query: &Query, soa_name: &Name, nsecs: &[&Record]) -> Proof {
     //  if they are, then the query_type should not exist in the NSEC record.
     //  if we got an NSEC record of the same name, but it is listed in the NSEC types,
     //    WTF? is that bad server, bad record
-    if let Some(nsec) = nsecs.iter().find(|nsec| query.name() == nsec.name()) {
-        if nsec
-            .data()
-            .as_dnssec()
-            .and_then(DNSSECRData::as_nsec)
-            .is_some_and(|rdata| {
-                // this should not be in the covered list
-                !rdata.type_bit_maps().contains(&query.query_type())
-            })
-        {
+    if let Some((_, nsec_data)) = nsecs.iter().find(|(name, _)| query.name() == *name) {
+        if !nsec_data.type_bit_maps().contains(&query.query_type()) {
             return proof_log_yield(ds_proof_override, query.name(), "nsec1", "direct match");
         } else {
             return proof_log_yield(Proof::Bogus, query.name(), "nsec1", "direct match");
         }
     }
 
-    let verify_nsec_coverage = |name: &Name| -> bool {
-        nsecs.iter().any(|nsec| {
+    let verify_nsec_coverage = |query_name: &Name| -> bool {
+        nsecs.iter().any(|(nsec_name, nsec_data)| {
             // the query name must be greater than nsec's label (or equal in the case of wildcard)
-            name >= nsec.name() && {
-                nsec.data()
-                    .as_dnssec()
-                    .and_then(DNSSECRData::as_nsec)
-                    .is_some_and(|rdata| {
-                        // the query name is less than the next name
-                        // or this record wraps the end, i.e. is the last record
-                        name < rdata.next_domain_name() || rdata.next_domain_name() < nsec.name()
-                    })
+            query_name >= nsec_name && {
+                // the query name is less than the next name
+                // or this record wraps the end, i.e. is the last record
+                query_name < nsec_data.next_domain_name()
+                    || nsec_data.next_domain_name() < nsec_name
             }
         })
     };
@@ -1378,6 +1367,8 @@ fn proof_log_yield(proof: Proof, name: &Name, nsec_type: &str, msg: &str) -> Pro
 }
 
 mod rrset {
+    use alloc::vec::Vec;
+
     use crate::rr::{DNSClass, Name, Record, RecordType};
 
     // TODO: combine this with crate::rr::RecordSet?

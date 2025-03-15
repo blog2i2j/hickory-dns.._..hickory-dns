@@ -8,18 +8,18 @@
 //! record data enum variants
 #![allow(deprecated, clippy::use_self)] // allows us to deprecate RData types
 
+use alloc::vec::Vec;
 #[cfg(test)]
-use std::convert::From;
-use std::{
-    cmp::Ordering,
-    fmt,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr},
-};
-
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
+use core::convert::From;
+#[cfg(not(feature = "std"))]
+use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use core::{cmp::Ordering, fmt};
+#[cfg(feature = "std")]
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use enum_as_inner::EnumAsInner;
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 use tracing::{trace, warn};
 
 use crate::{
@@ -1132,7 +1132,9 @@ impl From<Ipv6Addr> for RData {
 mod tests {
     #![allow(clippy::dbg_macro, clippy::print_stdout)]
 
-    use std::str::FromStr;
+    use alloc::string::ToString;
+    use core::str::FromStr;
+    use std::println;
 
     use super::*;
     use crate::rr::domain::Name;

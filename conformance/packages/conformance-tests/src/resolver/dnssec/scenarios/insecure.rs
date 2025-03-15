@@ -2,7 +2,7 @@ use std::net::Ipv4Addr;
 
 use dns_test::client::{Client, DigOutput, DigSettings};
 use dns_test::name_server::NameServer;
-use dns_test::record::{Record, RecordType};
+use dns_test::record::{A, Record, RecordType};
 use dns_test::zone_file::{Nsec, SignSettings};
 use dns_test::{FQDN, Network, Resolver, Result, TrustAnchor};
 
@@ -94,7 +94,8 @@ fn unsigned_zone_fixture(nsec: Nsec) -> Result<()> {
 
 #[test]
 fn no_ds_record_nsec1() -> Result<()> {
-    let (output, _logs) = no_ds_record_fixture(SignSettings::default().nsec(Nsec::_1))?;
+    let (output, _logs) =
+        no_ds_record_fixture(SignSettings::default().nsec(Nsec::_1), false, false)?;
 
     dbg!(&output);
 
@@ -106,10 +107,33 @@ fn no_ds_record_nsec1() -> Result<()> {
 
 #[test]
 fn no_ds_record_nsec3() -> Result<()> {
-    let (output, _logs) = no_ds_record_fixture(SignSettings::default().nsec(Nsec::_3 {
-        salt: None,
-        opt_out: false,
-    }))?;
+    let (output, _logs) = no_ds_record_fixture(
+        SignSettings::default().nsec(Nsec::_3 {
+            salt: None,
+            opt_out: false,
+        }),
+        false,
+        false,
+    )?;
+
+    dbg!(&output);
+
+    assert!(output.status.is_noerror());
+    assert!(!output.flags.authenticated_data);
+
+    Ok(())
+}
+
+#[test]
+fn no_ds_record_nsec3_case_randomization() -> Result<()> {
+    let (output, _logs) = no_ds_record_fixture(
+        SignSettings::default().nsec(Nsec::_3 {
+            salt: None,
+            opt_out: false,
+        }),
+        true,
+        false,
+    )?;
 
     dbg!(&output);
 
@@ -121,7 +145,24 @@ fn no_ds_record_nsec3() -> Result<()> {
 
 #[test]
 fn no_ds_record_nsec3_opt_out() -> Result<()> {
-    let (output, logs) = no_ds_record_fixture(SignSettings::rsasha256_nsec3_optout())?;
+    let (output, logs) =
+        no_ds_record_fixture(SignSettings::rsasha256_nsec3_optout(), false, false)?;
+
+    dbg!(&output);
+
+    assert!(output.status.is_noerror());
+    assert!(!output.flags.authenticated_data);
+
+    if dns_test::SUBJECT.is_hickory() {
+        assert!(logs.contains("DS query covered by opt-out proof"));
+    }
+
+    Ok(())
+}
+
+#[test]
+fn no_ds_record_nsec3_opt_out_with_chaff() -> Result<()> {
+    let (output, logs) = no_ds_record_fixture(SignSettings::rsasha256_nsec3_optout(), false, true)?;
 
     dbg!(&output);
 
@@ -139,7 +180,11 @@ fn no_ds_record_nsec3_opt_out() -> Result<()> {
 // importantly, the `testing.` zone must contain NSEC/NSEC3 records to deny the existence of
 // `no-ds.testing./DS` (which is why we cannot use `Graph::build` + `Sign::AndAmend` to produce
 // this network)
-fn no_ds_record_fixture(sign_settings: SignSettings) -> Result<(DigOutput, String)> {
+fn no_ds_record_fixture(
+    sign_settings: SignSettings,
+    case_randomization: bool,
+    add_chaff_to_tld: bool,
+) -> Result<(DigOutput, String)> {
     let network = Network::new()?;
 
     let no_ds_zone = FQDN::TEST_TLD.push_label("no-ds");
@@ -165,6 +210,16 @@ fn no_ds_record_fixture(sign_settings: SignSettings) -> Result<(DigOutput, Strin
     let no_ds_ns = no_ds_ns.sign(sign_settings.clone())?;
     let sibling_ns = sibling_ns.sign(sign_settings.clone())?;
 
+    if add_chaff_to_tld {
+        for i in 0..100 {
+            tld_ns.add(A {
+                fqdn: FQDN::TEST_TLD.push_label(&format!("chaff-{i}")),
+                ttl: 86400,
+                ipv4_addr: Ipv4Addr::new(1, 2, 3, 4),
+            });
+        }
+    }
+
     tld_ns.add(sibling_ns.ds().ksk.clone());
     // IMPORTANT omit this! this is the DS that connects `testing.` to `no-ds.testing.` in
     // the chain of trust. `no-ds.testing.` is correctly signed but the lack of the DS record turns
@@ -188,9 +243,12 @@ fn no_ds_record_fixture(sign_settings: SignSettings) -> Result<(DigOutput, Strin
     let _sibling_ns = sibling_ns.start()?;
     let _no_ds_ns = no_ds_ns.start()?;
 
-    let resolver = Resolver::new(&network, root_hint)
-        .trust_anchor(&trust_anchor)
-        .start()?;
+    let mut resolver_settings = Resolver::new(&network, root_hint);
+    resolver_settings.trust_anchor(&trust_anchor);
+    if case_randomization {
+        resolver_settings.case_randomization();
+    }
+    let resolver = resolver_settings.start()?;
 
     let client = Client::new(&network)?;
     let settings = *DigSettings::default().recurse().authentic_data();

@@ -6,15 +6,17 @@
 // copied, modified, or distributed except according to those terms.
 
 use std::io;
+#[cfg(feature = "__dnssec")]
+use std::sync::Arc;
 
 use hickory_resolver::{
-    config::ResolveHosts,
+    config::{ResolveHosts, ResolverOpts},
     name_server::{ConnectionProvider, TokioConnectionProvider},
 };
 use tracing::{debug, info};
 
 #[cfg(feature = "__dnssec")]
-use crate::{authority::Nsec3QueryInfo, dnssec::NxProofKind};
+use crate::{authority::Nsec3QueryInfo, dnssec::NxProofKind, proto::dnssec::TrustAnchors};
 use crate::{
     authority::{
         Authority, LookupControlFlow, LookupError, LookupObject, LookupOptions, MessageRequest,
@@ -29,37 +31,71 @@ use crate::{
     store::forwarder::ForwardConfig,
 };
 
-/// An authority that will forward resolutions to upstream resolvers.
+/// A builder to construct a [`ForwardAuthority`].
 ///
-/// This uses the hickory-resolver crate for resolving requests.
-pub struct ForwardAuthority<P: ConnectionProvider = TokioConnectionProvider> {
-    origin: LowerName,
-    resolver: Resolver<P>,
+/// Created by [`ForwardAuthority::builder`].
+pub struct ForwardAuthorityBuilder<P: ConnectionProvider> {
+    origin: Name,
+    config: ForwardConfig,
+    domain: Option<Name>,
+    search: Vec<Name>,
+    runtime: P,
+
+    #[cfg(feature = "__dnssec")]
+    trust_anchor: Option<Arc<TrustAnchors>>,
 }
 
-impl<P: ConnectionProvider> ForwardAuthority<P> {
-    #[doc(hidden)]
-    pub fn new(runtime: P) -> Result<Self, String> {
-        let resolver = Resolver::from_system_conf(runtime)
-            .map_err(|e| format!("error constructing new Resolver: {e}"))?;
-
-        Ok(Self {
-            origin: Name::root().into(),
-            resolver,
-        })
+impl<P: ConnectionProvider> ForwardAuthorityBuilder<P> {
+    /// Set the origin of the authority.
+    pub fn with_origin(mut self, origin: Name) -> Self {
+        self.origin = origin;
+        self
     }
 
-    /// Read the Authority for the origin from the specified configuration
-    pub fn try_from_runtime(
-        origin: Name,
-        _zone_type: ZoneType,
-        config: &ForwardConfig,
-        runtime: P,
-    ) -> Result<Self, String> {
-        info!("loading forwarder config: {}", origin);
+    /// Enables DNSSEC validation, and sets the DNSSEC trust anchors to be used by the forward
+    /// authority.
+    ///
+    /// This overrides the trust anchor path in the `ResolverOpts`.
+    #[cfg(feature = "__dnssec")]
+    pub fn with_trust_anchor(mut self, trust_anchor: Arc<TrustAnchors>) -> Self {
+        self.trust_anchor = Some(trust_anchor);
+        self
+    }
 
-        let name_servers = config.name_servers.clone();
-        let mut options = config.options.clone().unwrap_or_default();
+    /// Returns a mutable reference to the [`ResolverOpts`].
+    pub fn options_mut(&mut self) -> &mut ResolverOpts {
+        self.config
+            .options
+            .get_or_insert_with(ResolverOpts::default)
+    }
+
+    /// Set the system domain name.
+    pub fn with_domain(mut self, domain: Name) -> Self {
+        self.domain = Some(domain);
+        self
+    }
+
+    /// Set the search domains.
+    pub fn with_search(mut self, search: Vec<Name>) -> Self {
+        self.search = search;
+        self
+    }
+
+    /// Construct the authority.
+    pub fn build(self) -> Result<ForwardAuthority<P>, String> {
+        let Self {
+            origin,
+            config,
+            domain,
+            search,
+            runtime,
+            #[cfg(feature = "__dnssec")]
+            trust_anchor,
+        } = self;
+        info!(%origin, "loading forwarder config");
+
+        let name_servers = config.name_servers;
+        let mut options = config.options.unwrap_or_default();
 
         // See RFC 1034, Section 4.3.2:
         // "If the data at the node is a CNAME, and QTYPE doesn't match
@@ -86,33 +122,82 @@ impl<P: ConnectionProvider> ForwardAuthority<P> {
             options.use_hosts_file = ResolveHosts::Never;
         }
 
-        let config = ResolverConfig::from_parts(None, vec![], name_servers);
+        let config = ResolverConfig::from_parts(domain, search, name_servers);
 
-        let resolver = Resolver::new(config, options, runtime);
+        let mut resolver_builder = Resolver::builder_with_config(config, runtime);
 
-        info!("forward resolver configured: {}: ", origin);
+        #[cfg(feature = "__dnssec")]
+        match (trust_anchor, &options.trust_anchor) {
+            (Some(trust_anchor), _) => {
+                resolver_builder = resolver_builder.with_trust_anchor(trust_anchor);
+                options.validate = true;
+            }
+            (None, Some(path)) => {
+                let trust_anchor = TrustAnchors::from_file(path).map_err(|err| err.to_string())?;
+                resolver_builder = resolver_builder.with_trust_anchor(Arc::new(trust_anchor));
+                options.validate = true;
+            }
+            (None, None) => {}
+        }
 
-        // TODO: this might be infallible?
-        Ok(Self {
+        *resolver_builder.options_mut() = options;
+        let resolver = resolver_builder.build();
+
+        info!(%origin, "forward resolver configured");
+
+        Ok(ForwardAuthority {
             origin: origin.into(),
             resolver,
         })
     }
 }
 
-impl ForwardAuthority<TokioConnectionProvider> {
-    /// Read the Authority for the origin from the specified configuration
-    pub fn try_from_config(
-        origin: Name,
-        zone_type: ZoneType,
-        config: &ForwardConfig,
-    ) -> Result<Self, String> {
-        Self::try_from_runtime(
-            origin,
-            zone_type,
+/// An authority that will forward resolutions to upstream resolvers.
+///
+/// This uses the hickory-resolver crate for resolving requests.
+pub struct ForwardAuthority<P: ConnectionProvider = TokioConnectionProvider> {
+    origin: LowerName,
+    resolver: Resolver<P>,
+}
+
+impl<P: ConnectionProvider> ForwardAuthority<P> {
+    /// Construct a new [`ForwardAuthority`] via [`ForwardAuthorityBuilder`], using the operating
+    /// system's resolver configuration.
+    pub fn builder(runtime: P) -> Result<ForwardAuthorityBuilder<P>, String> {
+        let (resolver_config, options) = hickory_resolver::system_conf::read_system_conf()
+            .map_err(|e| format!("error reading system configuration: {e}"))?;
+        let forward_config = ForwardConfig {
+            name_servers: resolver_config.name_servers().to_vec().into(),
+            options: Some(options),
+        };
+        let mut builder = Self::builder_with_config(forward_config, runtime);
+        if let Some(domain) = resolver_config.domain() {
+            builder = builder.with_domain(domain.clone());
+        }
+        builder = builder.with_search(resolver_config.search().to_vec());
+        Ok(builder)
+    }
+
+    /// Construct a new [`ForwardAuthority`] via [`ForwardAuthorityBuilder`] with the provided configuration.
+    pub fn builder_with_config(config: ForwardConfig, runtime: P) -> ForwardAuthorityBuilder<P> {
+        ForwardAuthorityBuilder {
+            origin: Name::root(),
             config,
-            TokioConnectionProvider::default(),
-        )
+            domain: None,
+            search: vec![],
+            runtime,
+            #[cfg(feature = "__dnssec")]
+            trust_anchor: None,
+        }
+    }
+}
+
+impl ForwardAuthority<TokioConnectionProvider> {
+    /// Construct a new [`ForwardAuthority`] via [`ForwardAuthorityBuilder`] with the provided configuration.
+    pub fn builder_tokio(
+        config: ForwardConfig,
+    ) -> ForwardAuthorityBuilder<TokioConnectionProvider> {
+        Self::builder_with_config(config, TokioConnectionProvider::default())
     }
 }
 
@@ -128,6 +213,11 @@ impl<P: ConnectionProvider> Authority for ForwardAuthority<P> {
     /// Always false for Forward zones
     fn is_axfr_allowed(&self) -> bool {
         false
+    }
+
+    /// Whether the authority can perform DNSSEC validation
+    fn can_validate_dnssec(&self) -> bool {
+        self.resolver.options().validate
     }
 
     async fn update(&self, _update: &MessageRequest) -> UpdateResult<bool> {

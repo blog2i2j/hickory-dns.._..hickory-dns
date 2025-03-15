@@ -27,17 +27,33 @@ all-features: (default "--all-features")
 # Check, build, and test all crates with no-default-features
 no-default-features: (default "--no-default-features" "--ignore=\\{hickory-compatibility\\}")
 
-# Check, build, and test all crates with dns-over-rustls enabled
-dns-over-rustls: (default "--features=dns-over-rustls" "--ignore=\\{hickory-compatibility,test-support\\}")
+# Check, build, and test all crates with no-default-features, but with std features enabled
+std: (default "--no-default-features" "--ignore=\\{hickory-compatibility,hickory-proto\\}")
+    cargo {{MSRV}} test --locked --package hickory-proto --no-default-features --features="std"
 
-# Check, build, and test all crates with dns-over-https-rustls enabled
-dns-over-https-rustls: (default "--features=dns-over-https-rustls" "--ignore=\\{hickory-compatibility,test-support\\}")
+# Check, build, and test all crates with tls-aws-lc-rs enabled
+tls-aws-lc-rs: (default "--features=tls-aws-lc-rs" "--ignore=\\{hickory-compatibility,test-support\\}")
 
-# Check, build, and test all crates with dns-over-quic enabled
-dns-over-quic: (default "--features=dns-over-quic" "--ignore=\\{hickory-compatibility,test-support\\}")
+# Check, build, and test all crates with https-aws-lc-rs enabled
+https-aws-lc-rs: (default "--features=https-aws-lc-rs" "--ignore=\\{hickory-compatibility,test-support\\}")
 
-# Check, build, and test all crates with dns-over-h3 enabled
-dns-over-h3: (default "--features=dns-over-h3" "--ignore=\\{hickory-compatibility,hickory-client,test-support\\}")
+# Check, build, and test all crates with quic-aws-lc-rs enabled
+quic-aws-lc-rs: (default "--features=quic-aws-lc-rs" "--ignore=\\{hickory-compatibility,test-support\\}")
+
+# Check, build, and test all crates with h3-aws-lc-rs enabled
+h3-aws-lc-rs: (default "--features=h3-aws-lc-rs" "--ignore=\\{hickory-compatibility,hickory-client,test-support\\}")
+
+# Check, build, and test all crates with tls-ring enabled
+tls-ring: (default "--features=tls-ring" "--ignore=\\{hickory-compatibility,test-support\\}")
+
+# Check, build, and test all crates with https-ring enabled
+https-ring: (default "--features=https-ring" "--ignore=\\{hickory-compatibility,test-support\\}")
+
+# Check, build, and test all crates with quic-ring enabled
+quic-ring: (default "--features=quic-ring" "--ignore=\\{hickory-compatibility,test-support\\}")
+
+# Check, build, and test all crates with h3-ring enabled
+h3-ring: (default "--features=h3-ring" "--ignore=\\{hickory-compatibility,hickory-client,test-support\\}")
 
 # Check, build, and test all crates with dnssec-aws-lc-rs enabled
 dnssec-aws-lc-rs: (default "--features=dnssec-aws-lc-rs" "--ignore=\\{async-std-resolver,hickory-compatibility,test-support\\}")
@@ -94,8 +110,10 @@ fmt:
 
 # Audit all depenedencies
 audit: init-audit (check '--all-features')
-    cargo audit --deny warnings --ignore RUSTSEC-2025-0007
-    cargo audit --file fuzz/Cargo.lock --deny warnings --ignore RUSTSEC-2025-0007
+    # RUSTSEC-2024-0436, regarding the maintenance status of `paste`, is being
+    # ignored for now. See issue #2833.
+    cargo audit --deny warnings --ignore RUSTSEC-2024-0436
+    cargo audit --file fuzz/Cargo.lock --deny warnings --ignore RUSTSEC-2024-0436
 
 # Task to run clippy, rustfmt, and audit on all crates
 cleanliness: clippy fmt audit
@@ -181,7 +199,7 @@ conformance-bind filter='':
     DNS_TEST_VERBOSE_DOCKER_BUILD=1 DNS_TEST_PEER=unbound DNS_TEST_SUBJECT=bind cargo t --manifest-path conformance/Cargo.toml -p conformance-tests -- --include-ignored {{filter}}
 
 # runs the conformance test suite against the latest local hickory-dns commit -- changes that have not been commited will be ignored!
-conformance-hickory: (conformance-hickory-ring)
+conformance-hickory: (conformance-hickory-aws-lc-rs)
 
 conformance-hickory-aws-lc-rs filter='':
     @ bash -c '[[ -n "$(git status -s)" ]] && echo "WARNING: uncommitted changes will NOT be tested" || true'
@@ -201,7 +219,7 @@ conformance-ignored:
 
     tmpfile="$(mktemp)"
     bash -c '[[ -n "$(git status -s)" ]] && echo "WARNING: uncommitted changes will NOT be tested" || true'
-    ( DNS_TEST_VERBOSE_DOCKER_BUILD=1 DNS_TEST_PEER=unbound DNS_TEST_SUBJECT="hickory {{justfile_directory()}} dnssec-ring" cargo test --manifest-path conformance/Cargo.toml -p conformance-tests --lib -- --ignored || true ) | tee "$tmpfile"
+    ( DNS_TEST_VERBOSE_DOCKER_BUILD=1 DNS_TEST_PEER=unbound DNS_TEST_SUBJECT="hickory {{justfile_directory()}} dnssec-aws-lc-rs" cargo test --manifest-path conformance/Cargo.toml -p conformance-tests --lib -- --ignored || true ) | tee "$tmpfile"
     grep -e 'test result: \(ok\|FAILED\). 0 passed' "$tmpfile" || ( echo "expected ALL tests to fail but at least one passed; the passing tests must be un-#[ignore]-d" && exit 1 )
     bash -c '[[ -n "$(git status -s)" ]] && echo "WARNING: uncommitted changes were NOT tested" || true'
 

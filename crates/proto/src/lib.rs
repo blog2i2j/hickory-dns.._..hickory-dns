@@ -6,11 +6,15 @@
 // https://opensource.org/licenses/MIT>, at your option. This file may not be
 // copied, modified, or distributed except according to those terms.
 
+#![no_std]
 // LIBRARY WARNINGS
 #![warn(
+    clippy::alloc_instead_of_core,
     clippy::default_trait_access,
     clippy::dbg_macro,
     clippy::print_stdout,
+    clippy::std_instead_of_core,
+    clippy::std_instead_of_alloc,
     clippy::unimplemented,
     clippy::use_self,
     missing_copy_implementations,
@@ -30,6 +34,11 @@
 
 //! Hickory DNS Protocol library
 
+extern crate std;
+
+#[macro_use]
+extern crate alloc;
+
 macro_rules! try_ready_stream {
     ($e:expr) => {{
         match $e {
@@ -46,20 +55,20 @@ pub mod async_std;
 #[cfg(any(feature = "dnssec-aws-lc-rs", feature = "dnssec-ring"))]
 pub mod dnssec;
 mod error;
-#[cfg(feature = "dns-over-https-rustls")]
+#[cfg(feature = "__https")]
 pub mod h2;
-#[cfg(feature = "dns-over-h3")]
+#[cfg(feature = "__h3")]
 pub mod h3;
-#[cfg(any(feature = "dns-over-https-rustls", feature = "dns-over-h3"))]
+#[cfg(any(feature = "__https", feature = "__h3"))]
 pub mod http;
 #[cfg(feature = "mdns")]
 pub mod multicast;
 pub mod op;
-#[cfg(all(feature = "dns-over-quic", feature = "tokio-runtime"))]
+#[cfg(all(feature = "__quic", feature = "tokio"))]
 pub mod quic;
 pub mod rr;
 pub mod runtime;
-#[cfg(feature = "dns-over-rustls")]
+#[cfg(feature = "__tls")]
 pub mod rustls;
 pub mod serialize;
 pub mod tcp;

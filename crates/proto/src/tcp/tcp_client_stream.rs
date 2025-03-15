@@ -5,12 +5,13 @@
 // https://opensource.org/licenses/MIT>, at your option. This file may not be
 // copied, modified, or distributed except according to those terms.
 
-use std::fmt::{self, Display};
-use std::future::Future;
+use alloc::boxed::Box;
+use core::fmt::{self, Display};
+use core::future::Future;
+use core::pin::Pin;
+use core::task::{Context, Poll};
+use core::time::Duration;
 use std::net::SocketAddr;
-use std::pin::Pin;
-use std::task::{Context, Poll};
-use std::time::Duration;
 
 use futures_util::{StreamExt, stream::Stream};
 use tracing::warn;
@@ -18,9 +19,9 @@ use tracing::warn;
 use crate::BufDnsStreamHandle;
 use crate::error::ProtoError;
 use crate::runtime::RuntimeProvider;
-#[cfg(feature = "tokio-runtime")]
+#[cfg(feature = "tokio")]
 use crate::runtime::TokioTime;
-#[cfg(feature = "tokio-runtime")]
+#[cfg(feature = "tokio")]
 use crate::runtime::iocompat::AsyncIoTokioAsStd;
 use crate::tcp::{DnsTcpStream, TcpStream};
 use crate::xfer::{DnsClientStream, SerialMessage};
@@ -99,7 +100,7 @@ impl<S: DnsTcpStream> Stream for TcpClientStream<S> {
     }
 }
 
-#[cfg(feature = "tokio-runtime")]
+#[cfg(feature = "tokio")]
 impl<T> DnsTcpStream for AsyncIoTokioAsStd<T>
 where
     T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + Sync + Sized + 'static,
@@ -108,7 +109,7 @@ where
 }
 
 #[cfg(test)]
-#[cfg(feature = "tokio-runtime")]
+#[cfg(feature = "tokio")]
 mod tests {
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 

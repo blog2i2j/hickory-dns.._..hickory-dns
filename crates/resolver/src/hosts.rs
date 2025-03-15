@@ -1,6 +1,7 @@
 //! Hosts result from a configuration of the system hosts file
 
 use std::collections::HashMap;
+use std::fs::File;
 use std::io;
 use std::net::IpAddr;
 use std::path::Path;
@@ -36,14 +37,23 @@ impl Hosts {
     /// only works for Windows and Unix-like OSes,
     /// will return empty configuration on others
     #[cfg(any(unix, windows))]
-    pub fn new() -> Self {
-        read_hosts_conf(hosts_path()).unwrap_or_default()
+    pub fn from_system() -> io::Result<Self> {
+        Self::from_file(hosts_path())
     }
 
     /// Creates a default configuration for non Windows or Unix-like OSes
     #[cfg(not(any(unix, windows)))]
-    pub fn new() -> Self {
-        Hosts::default()
+    pub fn from_system() -> io::Result<Self> {
+        Ok(Hosts::default())
+    }
+
+    /// parse configuration from `path`
+    #[cfg(any(unix, windows))]
+    pub(crate) fn from_file(path: impl AsRef<Path>) -> io::Result<Self> {
+        let file = File::open(path)?;
+        let mut hosts = Self::default();
+        hosts.read_hosts_conf(file)?;
+        Ok(hosts)
     }
 
     /// Look up the addresses for the given host from the system hosts file.
@@ -51,9 +61,12 @@ impl Hosts {
         if self.by_name.is_empty() {
             return None;
         }
+
+        let mut name = query.name().clone();
+        name.set_fqdn(true);
         match query.query_type() {
             RecordType::A | RecordType::AAAA => {
-                let val = self.by_name.get(query.name())?;
+                let val = self.by_name.get(&name)?;
 
                 match query.query_type() {
                     RecordType::A => val.a.clone(),
@@ -62,7 +75,7 @@ impl Hosts {
                 }
             }
             RecordType::PTR => {
-                let ip = query.name().parse_arpa_name().ok()?;
+                let ip = name.parse_arpa_name().ok()?;
 
                 let ip_addr = ip.addr();
                 let records = self
@@ -84,7 +97,7 @@ impl Hosts {
                     })
                     .map(|(n, _)| {
                         Record::from_rdata(
-                            query.name().clone(),
+                            name.clone(),
                             dns_lru::MAX_TTL,
                             RData::PTR(PTR(n.clone())),
                         )
@@ -102,9 +115,10 @@ impl Hosts {
     }
 
     /// Insert a new Lookup for the associated `Name` and `RecordType`
-    pub fn insert(&mut self, name: Name, record_type: RecordType, lookup: Lookup) {
+    pub fn insert(&mut self, mut name: Name, record_type: RecordType, lookup: Lookup) {
         assert!(record_type == RecordType::A || record_type == RecordType::AAAA);
 
+        name.set_fqdn(true);
         let lookup_type = self.by_name.entry(name.clone()).or_default();
 
         let new_lookup = {
@@ -147,45 +161,54 @@ impl Hosts {
         for line in BufReader::new(src).lines() {
             // Remove comments from the line
             let line = line?;
-            let line = line.split('#').next().unwrap().trim();
+            let line = match line.split_once('#') {
+                Some((line, _)) => line,
+                None => &line,
+            }
+            .trim();
+
             if line.is_empty() {
                 continue;
             }
 
-            let fields: Vec<_> = line.split_whitespace().collect();
-            if fields.len() < 2 {
-                continue;
-            }
-            let addr = if let Ok(a) = IpAddr::from_str(fields[0]) {
-                RData::from(a)
-            } else {
-                warn!("could not parse an IP from hosts file");
-                continue;
+            let mut iter = line.split_whitespace();
+            let addr = match iter.next() {
+                Some(addr) => match IpAddr::from_str(addr) {
+                    Ok(addr) => RData::from(addr),
+                    Err(_) => {
+                        warn!("could not parse an IP from hosts file ({addr:?})");
+                        continue;
+                    }
+                },
+                None => continue,
             };
 
-            for domain in fields.iter().skip(1).map(|domain| domain.to_lowercase()) {
-                if let Ok(name) = Name::from_str(&domain) {
-                    let record = Record::from_rdata(name.clone(), dns_lru::MAX_TTL, addr.clone());
-
-                    match addr {
-                        RData::A(..) => {
-                            let query = Query::query(name.clone(), RecordType::A);
-                            let lookup = Lookup::new_with_max_ttl(query, Arc::from([record]));
-                            self.insert(name.clone(), RecordType::A, lookup);
-                        }
-                        RData::AAAA(..) => {
-                            let query = Query::query(name.clone(), RecordType::AAAA);
-                            let lookup = Lookup::new_with_max_ttl(query, Arc::from([record]));
-                            self.insert(name.clone(), RecordType::AAAA, lookup);
-                        }
-                        _ => {
-                            warn!("unsupported IP type from Hosts file: {:#?}", addr);
-                            continue;
-                        }
-                    };
-
-                    // TODO: insert reverse lookup as well.
+            for domain in iter {
+                let domain = domain.to_lowercase();
+                let Ok(mut name) = Name::from_str(&domain) else {
+                    continue;
                 };
+
+                name.set_fqdn(true);
+                let record = Record::from_rdata(name.clone(), dns_lru::MAX_TTL, addr.clone());
+                match addr {
+                    RData::A(..) => {
+                        let query = Query::query(name.clone(), RecordType::A);
+                        let lookup = Lookup::new_with_max_ttl(query, Arc::from([record]));
+                        self.insert(name.clone(), RecordType::A, lookup);
+                    }
+                    RData::AAAA(..) => {
+                        let query = Query::query(name.clone(), RecordType::AAAA);
+                        let lookup = Lookup::new_with_max_ttl(query, Arc::from([record]));
+                        self.insert(name.clone(), RecordType::AAAA, lookup);
+                    }
+                    _ => {
+                        warn!("unsupported IP type from Hosts file: {:#?}", addr);
+                        continue;
+                    }
+                };
+
+                // TODO: insert reverse lookup as well.
             }
         }
 
@@ -206,17 +229,6 @@ fn hosts_path() -> std::path::PathBuf {
     system_root.join("System32\\drivers\\etc\\hosts")
 }
 
-/// parse configuration from `path`
-#[cfg(any(unix, windows))]
-pub(crate) fn read_hosts_conf<P: AsRef<Path>>(path: P) -> io::Result<Hosts> {
-    use std::fs::File;
-
-    let file = File::open(path)?;
-    let mut hosts = Hosts::default();
-    hosts.read_hosts_conf(file)?;
-    Ok(hosts)
-}
-
 #[cfg(any(unix, windows))]
 #[cfg(test)]
 mod tests {
@@ -232,9 +244,9 @@ mod tests {
     #[test]
     fn test_read_hosts_conf() {
         let path = format!("{}/hosts", tests_dir());
-        let hosts = read_hosts_conf(path).unwrap();
+        let hosts = Hosts::from_file(path).unwrap();
 
-        let name = Name::from_str("localhost").unwrap();
+        let name = Name::from_str("localhost.").unwrap();
         let rdatas = hosts
             .lookup_static_host(&Query::query(name.clone(), RecordType::A))
             .unwrap()
@@ -306,8 +318,8 @@ mod tests {
         assert_eq!(
             rdatas,
             vec![
-                RData::PTR(PTR("a.example.com".parse().unwrap())),
-                RData::PTR(PTR("b.example.com".parse().unwrap()))
+                RData::PTR(PTR("a.example.com.".parse().unwrap())),
+                RData::PTR(PTR("b.example.com.".parse().unwrap()))
             ]
         );
 
@@ -321,6 +333,9 @@ mod tests {
             .iter()
             .map(ToOwned::to_owned)
             .collect::<Vec<RData>>();
-        assert_eq!(rdatas, vec![RData::PTR(PTR("localhost".parse().unwrap())),]);
+        assert_eq!(
+            rdatas,
+            vec![RData::PTR(PTR("localhost.".parse().unwrap())),]
+        );
     }
 }
