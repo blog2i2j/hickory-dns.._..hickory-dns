@@ -36,30 +36,45 @@ dnssec-aws-lc-rs = ["hickory-proto/dnssec-aws-lc-rs", "hickory-resolver/dnssec-a
 dnssec-ring = ["hickory-proto/dnssec-ring", "hickory-resolver/dnssec-ring", "__dnssec"]
 __dnssec = []
 
-# TODO: Need to figure out how to be consistent with ring/openssl usage...
-dns-over-https-rustls = [
-    "hickory-proto/dns-over-https-rustls",
-    "hickory-resolver/dns-over-https-rustls",
-    "dns-over-rustls",
+tls-aws-lc-rs = [
+    "hickory-proto/tls-aws-lc-rs",
+    "hickory-resolver/tls-aws-lc-rs",
 ]
-dns-over-quic = [
-    "dns-over-rustls",
-    "hickory-proto/dns-over-quic",
-    "hickory-resolver/dns-over-quic",
+https-aws-lc-rs = [
+    "hickory-proto/https-aws-lc-rs",
+    "hickory-resolver/https-aws-lc-rs",
+    "tls-aws-lc-rs",
 ]
-dns-over-h3 = [
-    "dns-over-rustls",
-    "hickory-proto/dns-over-h3",
-    "hickory-resolver/dns-over-h3",
+quic-aws-lc-rs = [
+    "hickory-proto/quic-aws-lc-rs",
+    "hickory-resolver/quic-aws-lc-rs",
+    "tls-aws-lc-rs",
 ]
-
-dns-over-rustls = [
-    "hickory-proto/dns-over-rustls",
-    "hickory-resolver/dns-over-rustls",
+h3-aws-lc-rs = [
+    "hickory-proto/h3-aws-lc-rs",
+    "hickory-resolver/h3-aws-lc-rs",
+    "quic-aws-lc-rs",
 ]
 
-# This is a deprecated feature...
-tls = []
+tls-ring = [
+    "hickory-proto/tls-ring",
+    "hickory-resolver/tls-ring",
+]
+https-ring = [
+    "hickory-proto/https-ring",
+    "hickory-resolver/https-ring",
+    "tls-ring",
+]
+quic-ring = [
+    "hickory-proto/quic-ring",
+    "hickory-resolver/quic-ring",
+    "tls-ring",
+]
+h3-ring = [
+    "hickory-proto/h3-ring",
+    "hickory-resolver/h3-ring",
+    "quic-ring",
+]
 
 serde = [
     "dep:serde",
@@ -86,16 +101,16 @@ lru-cache.workspace = true
 parking_lot.workspace = true
 prefix-trie.workspace = true
 serde = { workspace = true, features = ["derive"], optional = true }
-test-support.workspace=true
 thiserror.workspace = true
 tracing.workspace = true
 tokio = { workspace = true, features = ["net"] }
 hickory-proto.workspace = true
-hickory-resolver = { workspace = true, features = ["tokio-runtime"] }
+hickory-resolver = { workspace = true, features = ["tokio"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }
-tracing-subscriber.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt", "std"] }
+test-support.workspace = true
 
 [package.metadata.docs.rs]
 all-features = true
@@ -108,5 +123,5 @@ workspace = true
 
 [package.metadata.cargo-all-features]
 skip_optional_dependencies = true
-denylist = ["dnssec"]
 max_combination_size = 2
+denylist = ["__tls", "__https", "__quic", "__h3", "__dnssec"]

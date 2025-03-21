@@ -1,6 +1,7 @@
 use core::fmt;
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::net::Ipv4Addr;
 use std::path::Path;
 use std::str::FromStr;
 
@@ -21,6 +22,11 @@ pub enum Config<'a> {
         netmask: &'a str,
         /// Extended DNS error (RFC8914)
         ede: bool,
+        case_randomization: bool,
+    },
+    Forwarder {
+        resolver_ip: Ipv4Addr,
+        use_dnssec: bool,
     },
 }
 
@@ -29,6 +35,7 @@ impl Config<'_> {
         match self {
             Config::NameServer { .. } => Role::NameServer,
             Config::Resolver { .. } => Role::Resolver,
+            Config::Forwarder { .. } => Role::Forwarder,
         }
     }
 }
@@ -37,6 +44,7 @@ impl Config<'_> {
 pub enum Role {
     NameServer,
     Resolver,
+    Forwarder,
 }
 
 #[derive(Clone, Debug)]
@@ -45,7 +53,7 @@ pub enum Implementation {
     Dnslib,
     Hickory {
         repo: Repository<'static>,
-        dnssec_feature: Option<HickoryDnssecFeature>,
+        dnssec_feature: HickoryDnssecFeature,
     },
     Unbound,
     EdeDotCom,
@@ -66,11 +74,13 @@ impl Implementation {
     pub fn hickory() -> Self {
         Self::Hickory {
             repo: Repository(crate::repo_root()),
-            dnssec_feature: None,
+            dnssec_feature: HickoryDnssecFeature::AwsLcRs,
         }
     }
 
-    /// A test peer that cannot be changed using the `DNS_TEST_PEER` env variable
+    /// A test peer that cannot be changed using the `DNS_TEST_PEER` env variable.
+    ///
+    /// This is intended for use within `e2e-tests`, not `conformance-tests`.
     pub const fn test_peer() -> Implementation {
         Implementation::Unbound
     }
@@ -101,6 +111,7 @@ impl Implementation {
                 use_dnssec,
                 netmask,
                 ede,
+                case_randomization,
             } => match self {
                 Self::Bind => {
                     assert!(!ede, "the BIND resolver does not support EDE (RFC8914)");
@@ -122,6 +133,7 @@ impl Implementation {
                     minijinja::render!(
                         include_str!("templates/hickory.resolver.toml.jinja"),
                         use_dnssec => use_dnssec,
+                        case_randomization => case_randomization,
                     )
                 }
 
@@ -131,6 +143,7 @@ impl Implementation {
                         use_dnssec => use_dnssec,
                         netmask => netmask,
                         ede => ede,
+                        case_randomization => case_randomization,
                     )
                 }
 
@@ -167,8 +180,7 @@ impl Implementation {
                 }
 
                 Self::Hickory { dnssec_feature, .. } => {
-                    let use_pkcs8 =
-                        matches!(dnssec_feature, None | Some(HickoryDnssecFeature::Ring));
+                    let use_pkcs8 = matches!(dnssec_feature, HickoryDnssecFeature::Ring);
                     minijinja::render!(
                         include_str!("templates/hickory.name-server.toml.jinja"),
                         fqdn => origin.as_str(),
@@ -179,6 +191,39 @@ impl Implementation {
                 }
 
                 Self::EdeDotCom => include_str!("templates/named.ede-dot-com.conf").into(),
+            },
+
+            Config::Forwarder {
+                resolver_ip,
+                use_dnssec,
+            } => match self {
+                Self::Bind => minijinja::render!(
+                    include_str!("templates/named.forwarder.conf.jinja"),
+                    resolver_ip => resolver_ip,
+                    use_dnssec => use_dnssec,
+                ),
+
+                Self::Dnslib => {
+                    // Dnslib servers don't have a config
+                    "".into()
+                }
+
+                Self::Hickory { .. } => minijinja::render!(
+                    include_str!("templates/hickory.forwarder.toml.jinja"),
+                    resolver_ip => resolver_ip,
+                    use_dnssec => use_dnssec,
+                ),
+
+                Self::Unbound => minijinja::render!(
+                    include_str!("templates/unbound.forwarder.conf.jinja"),
+                    resolver_ip => resolver_ip,
+                    use_dnssec => use_dnssec,
+                ),
+
+                Self::EdeDotCom => {
+                    // Does not support running a forwarder
+                    "".into()
+                }
             },
         }
     }
@@ -193,7 +238,7 @@ impl Implementation {
 
             Self::Unbound => match role {
                 Role::NameServer => Some("/etc/nsd/nsd.conf"),
-                Role::Resolver => Some("/etc/unbound/unbound.conf"),
+                Role::Resolver | Role::Forwarder => Some("/etc/unbound/unbound.conf"),
             },
 
             Self::EdeDotCom => Some("/etc/named.conf"),
@@ -207,7 +252,7 @@ impl Implementation {
             Implementation::Hickory { .. } => "hickory-dns -d",
             Implementation::Unbound => match role {
                 Role::NameServer => "nsd -d",
-                Role::Resolver => "unbound -d",
+                Role::Resolver | Role::Forwarder => "unbound -d",
             },
         };
 
@@ -242,7 +287,7 @@ impl Implementation {
 
             Implementation::Unbound => match role {
                 Role::NameServer => "/tmp/nsd",
-                Role::Resolver => "/tmp/unbound",
+                Role::Resolver | Role::Forwarder => "/tmp/unbound",
             },
         };
 

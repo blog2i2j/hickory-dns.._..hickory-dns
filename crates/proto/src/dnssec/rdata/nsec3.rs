@@ -7,7 +7,7 @@
 
 //! NSEC record types
 
-use std::fmt;
+use alloc::{fmt, string::ToString, vec::Vec};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Deserializer, Serialize};
@@ -15,7 +15,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::{
     dnssec::Nsec3HashAlgorithm,
     error::{ProtoError, ProtoErrorKind, ProtoResult},
-    rr::{RData, RecordData, RecordDataDecodable, RecordType, domain::Label, type_bit_map::*},
+    rr::{RData, RecordData, RecordDataDecodable, RecordType, RecordTypeSet, domain::Label},
     serialize::binary::*,
 };
 
@@ -118,7 +118,7 @@ pub struct NSEC3 {
     /// too long, this may be `None` instead.
     #[cfg_attr(feature = "serde", serde(skip_serializing))]
     next_hashed_owner_name_base32: Option<Label>,
-    type_bit_maps: Vec<RecordType>,
+    type_bit_maps: RecordTypeSet,
 }
 
 impl NSEC3 {
@@ -129,7 +129,25 @@ impl NSEC3 {
         iterations: u16,
         salt: Vec<u8>,
         next_hashed_owner_name: Vec<u8>,
-        type_bit_maps: Vec<RecordType>,
+        type_bit_maps: impl IntoIterator<Item = RecordType>,
+    ) -> Self {
+        Self::with_record_type_set(
+            hash_algorithm,
+            opt_out,
+            iterations,
+            salt,
+            next_hashed_owner_name,
+            RecordTypeSet::new(type_bit_maps),
+        )
+    }
+
+    fn with_record_type_set(
+        hash_algorithm: Nsec3HashAlgorithm,
+        opt_out: bool,
+        iterations: u16,
+        salt: Vec<u8>,
+        next_hashed_owner_name: Vec<u8>,
+        type_bit_maps: RecordTypeSet,
     ) -> Self {
         let next_hashed_owner_name_base32 =
             Label::from_ascii(&data_encoding::BASE32_DNSSEC.encode(&next_hashed_owner_name)).ok();
@@ -247,7 +265,11 @@ impl NSEC3 {
     ///  The Type Bit Maps field identifies the RRSet types that exist at the
     ///  original owner name of the NSEC3 RR.
     /// ```
-    pub fn type_bit_maps(&self) -> &[RecordType] {
+    pub fn type_bit_maps(&self) -> impl Iterator<Item = RecordType> + '_ {
+        self.type_bit_maps.iter()
+    }
+
+    pub(crate) fn type_set(&self) -> &RecordTypeSet {
         &self.type_bit_maps
     }
 
@@ -270,7 +292,7 @@ impl BinEncodable for NSEC3 {
         encoder.emit_vec(self.salt())?;
         encoder.emit(self.next_hashed_owner_name().len() as u8)?;
         encoder.emit_vec(self.next_hashed_owner_name())?;
-        encode_type_bit_maps(encoder, self.type_bit_maps())?;
+        self.type_bit_maps.emit(encoder)?;
 
         Ok(())
     }
@@ -320,13 +342,14 @@ impl<'r> RecordDataDecodable<'r> for NSEC3 {
             decoder.read_vec(hash_len)?.unverified(/*will fail in usage if invalid*/);
 
         // read the bitmap
+        let offset = u16::try_from(decoder.index() - start_idx)
+            .map_err(|_| ProtoError::from("decoding offset too large in NSEC3"))?;
         let bit_map_len = length
-            .map(|u| u as usize)
-            .checked_sub(decoder.index() - start_idx)
+            .checked_sub(offset)
             .map_err(|_| "invalid rdata length in NSEC3")?;
-        let record_types = decode_type_bit_maps(decoder, bit_map_len)?;
+        let record_types = RecordTypeSet::read_data(decoder, bit_map_len)?;
 
-        Ok(Self::new(
+        Ok(Self::with_record_type_set(
             hash_algorithm,
             opt_out,
             iterations,
@@ -409,10 +432,10 @@ impl fmt::Display for NSEC3 {
             flags = self.flags(),
             iterations = self.iterations,
             salt = salt,
-            owner = data_encoding::BASE32_NOPAD.encode(&self.next_hashed_owner_name)
+            owner = data_encoding::BASE32_DNSSEC.encode(&self.next_hashed_owner_name)
         )?;
 
-        for ty in &self.type_bit_maps {
+        for ty in self.type_bit_maps.iter() {
             write!(f, " {ty}")?;
         }
 
@@ -436,7 +459,7 @@ struct NSEC3Serde {
     iterations: u16,
     salt: Vec<u8>,
     next_hashed_owner_name: Vec<u8>,
-    type_bit_maps: Vec<RecordType>,
+    type_bit_maps: RecordTypeSet,
 }
 
 #[cfg(feature = "serde")]
@@ -453,7 +476,7 @@ impl<'de> Deserialize<'de> for NSEC3 {
             next_hashed_owner_name,
             type_bit_maps,
         } = NSEC3Serde::deserialize(deserializer)?;
-        Ok(Self::new(
+        Ok(Self::with_record_type_set(
             hash_algorithm,
             opt_out,
             iterations,
@@ -468,6 +491,8 @@ impl<'de> Deserialize<'de> for NSEC3 {
 mod tests {
     #![allow(clippy::dbg_macro, clippy::print_stdout)]
 
+    use std::println;
+
     use super::*;
     use crate::dnssec::rdata::RecordType;
 
@@ -479,7 +504,7 @@ mod tests {
             2,
             vec![1, 2, 3, 4, 5],
             vec![6, 7, 8, 9, 0],
-            vec![
+            [
                 RecordType::A,
                 RecordType::AAAA,
                 RecordType::DS,
@@ -508,7 +533,7 @@ mod tests {
             2,
             vec![1, 2, 3, 4, 5],
             vec![6, 7, 8, 9, 0],
-            vec![
+            [
                 RecordType::A,
                 RecordType::AAAA,
                 RecordType::DS,
@@ -523,7 +548,7 @@ mod tests {
             2,
             vec![1, 2, 3, 4, 5],
             vec![6, 7, 8, 9, 0],
-            vec![
+            [
                 RecordType::A,
                 RecordType::AAAA,
                 RecordType::DS,

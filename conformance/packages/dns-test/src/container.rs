@@ -28,7 +28,7 @@ pub enum Image {
     Client,
     Hickory {
         repo: Repository<'static>,
-        dnssec_feature: Option<HickoryDnssecFeature>,
+        dnssec_feature: HickoryDnssecFeature,
     },
     Unbound,
     EdeDotCom,
@@ -38,7 +38,7 @@ impl Image {
     pub fn hickory() -> Self {
         Self::Hickory {
             repo: Repository(crate::repo_root()),
-            dnssec_feature: None,
+            dnssec_feature: HickoryDnssecFeature::AwsLcRs,
         }
     }
 
@@ -112,14 +112,7 @@ impl fmt::Display for Image {
             Self::Client => f.write_str("client"),
             Self::Bind => f.write_str("bind"),
             Self::Dnslib => f.write_str("dnslib"),
-            Self::Hickory {
-                repo: _,
-                dnssec_feature: None,
-            } => f.write_str("hickory"),
-            Self::Hickory {
-                repo: _,
-                dnssec_feature: Some(dnssec_feature),
-            } => write!(f, "hickory-{dnssec_feature}"),
+            Self::Hickory { dnssec_feature, .. } => write!(f, "hickory-{dnssec_feature}"),
             Self::Unbound => f.write_str("unbound"),
             Self::EdeDotCom => f.write_str("ede-dot-com"),
         }
@@ -129,37 +122,62 @@ impl fmt::Display for Image {
 impl Container {
     /// Starts the container in a "parked" state
     pub fn run(image: &Image, network: &Network) -> Result<Self> {
-        // TODO make this configurable and support hickory & bind
-        let dockerfile = image.dockerfile();
-        let docker_build_dir = TempDir::new()?;
-        let docker_build_dir = docker_build_dir.path();
-        fs::write(docker_build_dir.join("Dockerfile"), dockerfile)?;
-
         let image_tag = format!("{PACKAGE_NAME}-{image}");
-
-        let mut command = Command::new("docker");
-        command
-            .args(["build", "-t"])
-            .arg(&image_tag)
-            .arg(docker_build_dir);
-
-        if let Image::Hickory {
-            dnssec_feature: Some(dnssec_feature),
-            ..
-        } = image
-        {
-            command.arg(format!("--build-arg=DNSSEC_FEATURE={dnssec_feature}"));
-        };
-
-        let repo = if let Image::Hickory { repo, .. } = image {
-            Some(repo)
-        } else {
-            None
-        };
 
         if !skip_docker_build() {
             image.once().call_once(|| {
-                if let Some(repo) = repo {
+                let dockerfile = image.dockerfile();
+                let docker_build_dir =
+                    TempDir::new().expect("failed to create temporary directory");
+                let docker_build_dir = docker_build_dir.path();
+                fs::write(docker_build_dir.join("Dockerfile"), dockerfile)
+                    .expect("failed to write Dockerfile");
+
+                let mut command = Command::new("docker");
+                command
+                    .args(["build", "--load", "-t"])
+                    .arg(&image_tag)
+                    .arg(docker_build_dir);
+                // Use BuildKit instead of the legacy builder. We need to choose this in order to
+                // pass the `--load` flag above. Depending on which BuildKit build driver is in use,
+                // the `--load` flag may be necessary, in order to load the resulting image as a
+                // local Docker image.
+                command.env("DOCKER_BUILDKIT", "1");
+
+                if let Image::Hickory { dnssec_feature, .. } = image {
+                    command.arg(format!("--build-arg=DNSSEC_FEATURE={dnssec_feature}"));
+                };
+
+                if docker_build_gha_cache() {
+                    let scope = match image {
+                        Image::Bind => "bind",
+                        Image::Dnslib => "dnslib",
+                        Image::Client => "client",
+                        Image::Hickory {
+                            dnssec_feature: HickoryDnssecFeature::AwsLcRs,
+                            ..
+                        } => "hickory-dnssec-aws-lc-rs",
+                        Image::Hickory {
+                            dnssec_feature: HickoryDnssecFeature::Ring,
+                            ..
+                        } => "hickory-dnssec-ring",
+                        Image::Unbound => "unbound",
+                        Image::EdeDotCom => "ede-dot-com",
+                    };
+
+                    command.arg(format!("--cache-from=type=gha,scope=${scope}"));
+                    if let Image::Hickory { .. } = image {
+                        command.arg(format!(
+                            "--cache-to=type=gha,scope=${scope},mode=max,ignore-error=true"
+                        ));
+                    } else {
+                        command.arg(format!(
+                            "--cache-to=type=gha,scope=${scope},ignore-error=true"
+                        ));
+                    }
+                }
+
+                if let Image::Hickory { repo, .. } = image {
                     let mut cp_r = Command::new("git");
                     cp_r.args([
                         "clone",
@@ -332,6 +350,10 @@ fn verbose_docker_build() -> bool {
 
 fn skip_docker_build() -> bool {
     env::var("DNS_TEST_SKIP_DOCKER_BUILD").is_ok()
+}
+
+fn docker_build_gha_cache() -> bool {
+    env::var("DNS_TEST_DOCKER_CACHE_GHA").is_ok()
 }
 
 fn exec_or_panic(command: &mut Command, verbose: bool) {

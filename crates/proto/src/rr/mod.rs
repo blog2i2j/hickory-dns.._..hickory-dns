@@ -14,13 +14,13 @@ mod lower_name;
 pub mod rdata;
 pub mod record_data;
 pub mod record_type;
+pub(crate) mod record_type_set;
 pub mod resource;
 mod rr_key;
 mod rr_set;
 pub mod serial_number;
-pub mod type_bit_map;
 
-use std::fmt::{Debug, Display};
+use core::fmt::{Debug, Display};
 
 use crate::{
     error::ProtoResult,
@@ -31,6 +31,7 @@ pub use self::dns_class::DNSClass;
 pub use self::domain::{IntoName, Name};
 pub use self::record_data::RData;
 pub use self::record_type::RecordType;
+pub(crate) use self::record_type_set::RecordTypeSet;
 pub use self::resource::Record;
 #[allow(deprecated)]
 pub use self::rr_set::IntoRecordSet;

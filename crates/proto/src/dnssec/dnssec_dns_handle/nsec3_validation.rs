@@ -76,6 +76,8 @@
 //!     `wildcard_encloser` == `*.soa.name`
 //!
 
+use alloc::vec::Vec;
+
 use super::proof_log_yield;
 use crate::{
     dnssec::{Nsec3HashAlgorithm, Proof, rdata::NSEC3},
@@ -586,14 +588,11 @@ fn validate_nodata_response(
     //   and that the NSEC3 RR that covers the "next closer" name has the Opt-
     //   Out bit set.
     if let Some(query_record) = query_name_record {
-        if query_record
-            .nsec3_data
-            .type_bit_maps()
-            .contains(&query_type)
+        if query_record.nsec3_data.type_set().contains(query_type)
             || query_record
                 .nsec3_data
-                .type_bit_maps()
-                .contains(&RecordType::CNAME)
+                .type_set()
+                .contains(RecordType::CNAME)
         {
             return proof_log_yield(
                 Proof::Bogus,
@@ -655,10 +654,7 @@ fn validate_nodata_response(
     // is covered here by case 2.
     if query_type == RecordType::DS
         && find_covering_record(nsec3s, &hashed_query_name, &base32_hashed_query_name)
-            .iter()
-            .all(|x| {
-                x.nsec3_data.type_bit_maps().contains(&RecordType::DS) && x.nsec3_data.opt_out()
-            })
+            .is_some_and(|x| x.nsec3_data.opt_out())
     {
         return proof_log_yield(
             Proof::Insecure,

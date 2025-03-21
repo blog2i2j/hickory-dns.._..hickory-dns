@@ -32,17 +32,15 @@ license.workspace = true
 [features]
 backtrace = ["hickory-proto/backtrace"]
 
-dns-over-https-rustls = [
-    "dns-over-rustls",
-    "dep:rustls",
-    "hickory-proto/dns-over-https-rustls",
-]
-dns-over-h3 = ["dns-over-rustls", "hickory-proto/dns-over-h3"]
-dns-over-quic = ["dns-over-rustls", "hickory-proto/dns-over-quic"]
-dns-over-rustls = [
-    "dnssec-ring",
-    "hickory-proto/dns-over-rustls",
-]
+tls-aws-lc-rs = ["hickory-proto/tls-aws-lc-rs"]
+https-aws-lc-rs = ["hickory-proto/https-aws-lc-rs"]
+quic-aws-lc-rs = ["hickory-proto/quic-aws-lc-rs"]
+h3-aws-lc-rs = ["hickory-proto/h3-aws-lc-rs"]
+
+tls-ring = ["hickory-proto/tls-ring"]
+https-ring = ["hickory-proto/https-ring"]
+quic-ring = ["hickory-proto/quic-ring"]
+h3-ring = ["hickory-proto/h3-ring"]
 
 webpki-roots = ["hickory-proto/webpki-roots"]
 rustls-platform-verifier = ["hickory-proto/rustls-platform-verifier"]
@@ -68,18 +66,17 @@ futures-util = { workspace = true, default-features = false, features = ["std"] 
 once_cell.workspace = true
 radix_trie.workspace = true
 rand.workspace = true
-rustls = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"], optional = true }
-test-support.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tokio = { workspace = true, features = ["rt", "net"] }
-hickory-proto = { workspace = true, features = ["text-parsing", "tokio-runtime"] }
+hickory-proto = { workspace = true, features = ["text-parsing", "tokio"] }
 
 [dev-dependencies]
 futures = { workspace = true, default-features = false, features = ["std", "executor"] }
+test-support.workspace = true
 tokio = { workspace = true, features = ["rt", "macros"] }
-tracing-subscriber.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt", "std"] }
 webpki-roots = { workspace = true }
 
 [package.metadata.docs.rs]
@@ -93,5 +90,5 @@ workspace = true
 
 [package.metadata.cargo-all-features]
 skip_optional_dependencies = true
-denylist = ["dnssec"]
 max_combination_size = 2
+denylist = ["__tls", "__https", "__quic", "__h3", "__dnssec"]

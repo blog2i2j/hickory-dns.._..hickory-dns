@@ -6,14 +6,14 @@
 // copied, modified, or distributed except according to those terms.
 
 //! NSEC record types
-use std::fmt;
+
+use core::fmt;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
 use crate::error::*;
-use crate::rr::type_bit_map::{decode_type_bit_maps, encode_type_bit_maps};
-use crate::rr::{Name, RData, RecordData, RecordDataDecodable, RecordType};
+use crate::rr::{Name, RData, RecordData, RecordDataDecodable, RecordType, RecordTypeSet};
 use crate::serialize::binary::*;
 
 use super::DNSSECRData;
@@ -46,7 +46,7 @@ use super::DNSSECRData;
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct NSEC {
     next_domain_name: Name,
-    type_bit_maps: Vec<RecordType>,
+    type_bit_maps: RecordTypeSet,
 }
 
 impl NSEC {
@@ -61,10 +61,13 @@ impl NSEC {
     /// # Returns
     ///
     /// An NSEC RData for use in a Resource Record
-    pub fn new(next_domain_name: Name, type_bit_maps: Vec<RecordType>) -> Self {
+    pub fn new(
+        next_domain_name: Name,
+        type_bit_maps: impl IntoIterator<Item = RecordType>,
+    ) -> Self {
         Self {
             next_domain_name,
-            type_bit_maps,
+            type_bit_maps: RecordTypeSet::new(type_bit_maps),
         }
     }
 
@@ -79,10 +82,14 @@ impl NSEC {
     /// # Returns
     ///
     /// An NSEC RData for use in a Resource Record
-    pub fn new_cover_self(next_domain_name: Name, mut type_bit_maps: Vec<RecordType>) -> Self {
-        type_bit_maps.push(RecordType::NSEC);
-
-        Self::new(next_domain_name, type_bit_maps)
+    pub fn new_cover_self(
+        next_domain_name: Name,
+        type_bit_maps: impl IntoIterator<Item = RecordType>,
+    ) -> Self {
+        Self::new(
+            next_domain_name,
+            type_bit_maps.into_iter().chain([RecordType::NSEC]),
+        )
     }
 
     /// [RFC 4034](https://tools.ietf.org/html/rfc4034#section-4.1.1), DNSSEC Resource Records, March 2005
@@ -121,7 +128,11 @@ impl NSEC {
     ///    A zone MUST NOT include an NSEC RR for any domain name that only
     ///    holds glue records.
     /// ```
-    pub fn type_bit_maps(&self) -> &[RecordType] {
+    pub fn type_bit_maps(&self) -> impl Iterator<Item = RecordType> + '_ {
+        self.type_bit_maps.iter()
+    }
+
+    pub(crate) fn type_set(&self) -> &RecordTypeSet {
         &self.type_bit_maps
     }
 }
@@ -140,7 +151,9 @@ impl BinEncodable for NSEC {
     fn emit(&self, encoder: &mut BinEncoder<'_>) -> ProtoResult<()> {
         encoder.with_canonical_names(|encoder| {
             self.next_domain_name().emit(encoder)?;
-            encode_type_bit_maps(encoder, self.type_bit_maps())
+            self.type_bit_maps.emit(encoder)?;
+
+            Ok(())
         })
     }
 }
@@ -151,13 +164,17 @@ impl<'r> RecordDataDecodable<'r> for NSEC {
 
         let next_domain_name = Name::read(decoder)?;
 
+        let offset = u16::try_from(decoder.index() - start_idx)
+            .map_err(|_| ProtoError::from("decoding offset too large in NSEC"))?;
         let bit_map_len = length
-            .map(|u| u as usize)
-            .checked_sub(decoder.index() - start_idx)
+            .checked_sub(offset)
             .map_err(|_| ProtoError::from("invalid rdata length in NSEC"))?;
-        let record_types = decode_type_bit_maps(decoder, bit_map_len)?;
+        let type_bit_maps = RecordTypeSet::read_data(decoder, bit_map_len)?;
 
-        Ok(Self::new(next_domain_name, record_types))
+        Ok(Self {
+            next_domain_name,
+            type_bit_maps,
+        })
     }
 }
 
@@ -222,7 +239,7 @@ impl fmt::Display for NSEC {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
         write!(f, "{}", self.next_domain_name)?;
 
-        for ty in &self.type_bit_maps {
+        for ty in self.type_bit_maps.iter() {
             write!(f, " {ty}")?;
         }
 
@@ -234,16 +251,20 @@ impl fmt::Display for NSEC {
 mod tests {
     #![allow(clippy::dbg_macro, clippy::print_stdout)]
 
+    use std::println;
+
+    use alloc::vec::Vec;
+
     use super::*;
 
     #[test]
     fn test() {
         use crate::rr::RecordType;
-        use std::str::FromStr;
+        use core::str::FromStr;
 
         let rdata = NSEC::new(
             Name::from_str("www.example.com.").unwrap(),
-            vec![
+            [
                 RecordType::A,
                 RecordType::AAAA,
                 RecordType::DS,
@@ -262,5 +283,38 @@ mod tests {
         let restrict = Restrict::new(bytes.len() as u16);
         let read_rdata = NSEC::read_data(&mut decoder, restrict).expect("Decoding error");
         assert_eq!(rdata, read_rdata);
+    }
+
+    #[test]
+    fn rfc4034_example_rdata() {
+        // From section 4.3 of RFC 4034
+        let bytes = b"\x04host\
+        \x07example\
+        \x03com\x00\
+        \x00\x06\x40\x01\x00\x00\x00\x03\
+        \x04\x1b\x00\x00\x00\x00\x00\x00\
+        \x00\x00\x00\x00\x00\x00\x00\x00\
+        \x00\x00\x00\x00\x00\x00\x00\x00\
+        \x00\x00\x00\x00\x20";
+        let rdata = NSEC::new(
+            Name::parse("host.example.com.", None).unwrap(),
+            [
+                RecordType::A,
+                RecordType::MX,
+                RecordType::RRSIG,
+                RecordType::NSEC,
+                RecordType::Unknown(1234),
+            ],
+        );
+
+        let mut buffer = Vec::new();
+        let mut encoder = BinEncoder::new(&mut buffer);
+        rdata.emit(&mut encoder).expect("Encoding error");
+        assert_eq!(encoder.into_bytes(), bytes);
+
+        let mut decoder = BinDecoder::new(bytes);
+        let decoded = NSEC::read_data(&mut decoder, Restrict::new(bytes.len() as u16))
+            .expect("Decoding error");
+        assert_eq!(decoded, rdata);
     }
 }

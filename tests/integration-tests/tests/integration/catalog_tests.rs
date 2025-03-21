@@ -661,6 +661,7 @@ mod dnssec {
                 algorithm: Default::default(),
                 salt: Default::default(),
                 iterations: Default::default(),
+                opt_out: false,
             }),
         );
         let key = Ed25519SigningKey::from_pkcs8(
@@ -778,7 +779,7 @@ mod dnssec {
 
             for denied in [RecordType::NSEC, RecordType::NSEC3] {
                 assert!(
-                    !nsec3.type_bit_maps().contains(&denied),
+                    !nsec3.type_bit_maps().any(|r| r == denied),
                     "{denied} MUST not be included"
                 );
             }
@@ -791,7 +792,7 @@ mod dnssec {
                 RecordType::RRSIG,
             ] {
                 assert!(
-                    nsec3.type_bit_maps().contains(&required),
+                    nsec3.type_bit_maps().any(|r| r == required),
                     "{required} MUST be included"
                 );
             }

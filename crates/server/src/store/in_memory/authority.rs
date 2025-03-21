@@ -8,7 +8,7 @@
 //! In-memory authority
 
 #[cfg(feature = "__dnssec")]
-use std::collections::{HashMap, hash_map::Entry};
+use std::collections::{BTreeSet, HashMap, hash_map::Entry};
 #[cfg(all(feature = "__dnssec", feature = "testing"))]
 use std::ops::Deref;
 use std::{
@@ -664,7 +664,8 @@ impl InnerInMemory {
                 algorithm,
                 salt,
                 iterations,
-            }) => self.nsec3_zone(origin, dns_class, *algorithm, salt, *iterations)?,
+                opt_out,
+            }) => self.nsec3_zone(origin, dns_class, *algorithm, salt, *iterations, *opt_out)?,
             None => (),
         }
 
@@ -704,12 +705,12 @@ impl InnerInMemory {
         let mut records: Vec<Record> = vec![];
 
         {
-            let mut nsec_info: Option<(&Name, Vec<RecordType>)> = None;
+            let mut nsec_info: Option<(&Name, BTreeSet<RecordType>)> = None;
             for key in self.records.keys() {
                 match &mut nsec_info {
-                    None => nsec_info = Some((&key.name, vec![key.record_type])),
+                    None => nsec_info = Some((&key.name, BTreeSet::from([key.record_type]))),
                     Some((name, vec)) if LowerName::new(name) == key.name => {
-                        vec.push(key.record_type);
+                        vec.insert(key.record_type);
                     }
                     Some((name, vec)) => {
                         // names aren't equal, create the NSEC record
@@ -718,7 +719,7 @@ impl InnerInMemory {
                         records.push(record.into_record_of_rdata());
 
                         // new record...
-                        nsec_info = Some((&key.name, vec![key.record_type]))
+                        nsec_info = Some((&key.name, BTreeSet::from([key.record_type])))
                     }
                 }
             }
@@ -747,8 +748,8 @@ impl InnerInMemory {
         hash_alg: Nsec3HashAlgorithm,
         salt: &[u8],
         iterations: u16,
+        opt_out: bool,
     ) -> DnsSecResult<()> {
-        // FIXME: Implement collision detection.
         // only create nsec records for secure zones
         if self.secure_keys.is_empty() {
             return Ok(());
@@ -770,15 +771,30 @@ impl InnerInMemory {
         // now go through and generate the nsec3 records
         let ttl = self.minimum_ttl(origin);
         let serial = self.serial(origin);
-        // FIXME: Should be configurable
-        let opt_out = false;
 
         // Store the record types of each domain name so we can generate NSEC3 records for each
         // domain name.
         let mut record_types = HashMap::new();
         record_types.insert(origin.clone(), ([RecordType::NSEC3PARAM].into(), true));
 
+        let mut delegation_points = HashSet::<LowerName>::new();
+
         for key in self.records.keys() {
+            if !origin.zone_of(&key.name) {
+                // Non-authoritative record outside of zone
+                continue;
+            }
+            if delegation_points
+                .iter()
+                .any(|name| name.zone_of(&key.name) && name != &key.name)
+            {
+                // Non-authoritative record below zone cut
+                continue;
+            }
+            if key.record_type == RecordType::NS && &key.name != origin {
+                delegation_points.insert(key.name.clone());
+            }
+
             // Store the type of the current record under its domain name
             match record_types.entry(key.name.clone()) {
                 Entry::Occupied(mut entry) => {
@@ -790,17 +806,24 @@ impl InnerInMemory {
                     entry.insert((HashSet::from([key.record_type]), true));
                 }
             }
+        }
 
-            // For every domain name between the current name and the origin, add it to
-            // `record_types` without any record types. This covers all the empty non-terminals
-            // that must have an NSEC3 record as well.
-            let mut name = key.name.base_name();
+        if opt_out {
+            // Delete owner names that have unsigned delegations.
+            let ns_only = HashSet::from([RecordType::NS]);
+            record_types.retain(|_name, (types, _exists)| types != &ns_only);
+        }
 
-            for _ in origin.num_labels()..name.num_labels() {
-                if let Entry::Vacant(entry) = record_types.entry(name.clone()) {
-                    entry.insert((HashSet::new(), false));
-                }
-                name = name.base_name();
+        // For every domain name between the current name and the origin, add it to `record_types`
+        // without any record types. This covers all the empty non-terminals that must have an NSEC3
+        // record as well.
+        for name in record_types.keys().cloned().collect::<Vec<_>>() {
+            let mut parent = name.base_name();
+            while parent.num_labels() > origin.num_labels() {
+                record_types
+                    .entry(parent.clone())
+                    .or_insert_with(|| (HashSet::new(), false));
+                parent = parent.base_name();
             }
         }
 
@@ -832,8 +855,7 @@ impl InnerInMemory {
                 type_bit_maps
                     .iter()
                     .copied()
-                    .chain(exists.then_some(RecordType::RRSIG))
-                    .collect(),
+                    .chain(exists.then_some(RecordType::RRSIG)),
             );
 
             let name =

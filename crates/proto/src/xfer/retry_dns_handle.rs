@@ -7,8 +7,10 @@
 
 //! `RetryDnsHandle` allows for DnsQueries to be reattempted on failure
 
-use std::pin::Pin;
-use std::task::{Context, Poll};
+#[cfg(any(feature = "std", feature = "no-std-rand"))]
+use alloc::boxed::Box;
+use core::pin::Pin;
+use core::task::{Context, Poll};
 
 use futures_util::stream::{Stream, StreamExt};
 
@@ -30,6 +32,7 @@ use crate::xfer::{DnsRequest, DnsResponse};
 /// *note* Current value of this is not clear, it may be removed
 #[derive(Clone)]
 #[must_use = "queries can only be sent through a ClientHandle"]
+#[allow(dead_code)]
 pub struct RetryDnsHandle<H>
 where
     H: DnsHandle + Unpin + Send,
@@ -53,6 +56,7 @@ where
     }
 }
 
+#[cfg(any(feature = "std", feature = "no-std-rand"))]
 impl<H> DnsHandle for RetryDnsHandle<H>
 where
     H: DnsHandle + Send + Unpin + 'static,
@@ -135,20 +139,19 @@ impl RetryableError for ProtoError {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod test {
+    use alloc::sync::Arc;
+    use core::sync::atomic::{AtomicU16, Ordering};
+
     use super::*;
     use crate::error::*;
     use crate::op::*;
     use crate::xfer::FirstAnswer;
-    use DnsHandle;
+
     use futures_executor::block_on;
     use futures_util::future::{err, ok};
     use futures_util::stream::*;
-    use std::sync::{
-        Arc,
-        atomic::{AtomicU16, Ordering},
-    };
     use test_support::subscribe;
 
     #[derive(Clone)]

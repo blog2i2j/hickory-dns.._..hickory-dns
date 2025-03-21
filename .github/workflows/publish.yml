@@ -20,10 +20,10 @@ jobs:
 
     - uses: dtolnay/rust-toolchain@stable
 
-    - uses: extractions/setup-just@v2
+    - uses: extractions/setup-just@v3
 
     - name: install cargo-binstall
-      uses: cargo-bins/cargo-binstall@v1.11.1
+      uses: cargo-bins/cargo-binstall@v1.12.1
     - name: install cargo-workspaces
       run: cargo binstall cargo-workspaces -y --version ${{ env.CARGO_WS_VERSION }}
       env:

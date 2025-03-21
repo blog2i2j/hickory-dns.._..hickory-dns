@@ -14,22 +14,101 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use futures_util::{FutureExt, future};
-use tracing::{debug, trace};
+use tracing::debug;
 
 use crate::caching_client::CachingClient;
 use crate::config::{ResolveHosts, ResolverConfig, ResolverOpts};
-use crate::dns_lru::{self, DnsLru};
+use crate::dns_lru::{self, DnsLru, TtlConfig};
 use crate::error::{ResolveError, ResolveErrorKind};
 use crate::hosts::Hosts;
 use crate::lookup::{self, Lookup, LookupEither};
 use crate::lookup_ip::{LookupIp, LookupIpFuture};
-#[cfg(feature = "tokio-runtime")]
+#[cfg(feature = "tokio")]
 use crate::name_server::TokioConnectionProvider;
 use crate::name_server::{ConnectionProvider, NameServerPool};
+#[cfg(feature = "__dnssec")]
+use crate::proto::dnssec::{DnssecDnsHandle, TrustAnchors};
 use crate::proto::op::Query;
 use crate::proto::rr::domain::usage::ONION;
 use crate::proto::rr::{IntoName, Name, RData, Record, RecordType};
 use crate::proto::xfer::{DnsHandle, DnsRequestOptions, RetryDnsHandle};
+
+/// A builder to construct a [`Resolver`].
+///
+/// Created by [`Resolver::builder`].
+pub struct ResolverBuilder<P> {
+    config: ResolverConfig,
+    options: ResolverOpts,
+    provider: P,
+
+    #[cfg(feature = "__dnssec")]
+    trust_anchor: Option<Arc<TrustAnchors>>,
+}
+
+impl<P> ResolverBuilder<P>
+where
+    P: ConnectionProvider,
+{
+    /// Returns a mutable reference to the [`ResolverOpts`].
+    pub fn options_mut(&mut self) -> &mut ResolverOpts {
+        &mut self.options
+    }
+
+    /// Set the DNSSEC trust anchors to be used by the resolver.
+    #[cfg(feature = "__dnssec")]
+    pub fn with_trust_anchor(mut self, trust_anchor: Arc<TrustAnchors>) -> Self {
+        self.trust_anchor = Some(trust_anchor);
+        self
+    }
+
+    /// Construct the resolver.
+    pub fn build(self) -> Resolver<P> {
+        let Self {
+            config,
+            options,
+            provider,
+            #[cfg(feature = "__dnssec")]
+            trust_anchor,
+        } = self;
+
+        let pool = NameServerPool::from_config_with_provider(&config, options.clone(), provider);
+        let client = RetryDnsHandle::new(pool, options.attempts);
+        let either;
+
+        if options.validate {
+            #[cfg(feature = "__dnssec")]
+            {
+                let trust_anchor =
+                    trust_anchor.unwrap_or_else(|| Arc::new(TrustAnchors::default()));
+                either =
+                    LookupEither::Secure(DnssecDnsHandle::with_trust_anchor(client, trust_anchor));
+            }
+
+            #[cfg(not(feature = "__dnssec"))]
+            {
+                tracing::warn!("validate option is only available with dnssec features");
+                either = LookupEither::Retry(client);
+            }
+        } else {
+            either = LookupEither::Retry(client);
+        }
+
+        let lru = DnsLru::new(options.cache_size, TtlConfig::from_opts(&options));
+        let client_cache = CachingClient::with_cache(lru, either, options.preserve_intermediates);
+
+        let hosts = Arc::new(match options.use_hosts_file {
+            ResolveHosts::Always | ResolveHosts::Auto => Hosts::from_system().unwrap_or_default(),
+            ResolveHosts::Never => Hosts::default(),
+        });
+
+        Resolver {
+            config,
+            options,
+            client_cache,
+            hosts,
+        }
+    }
+}
 
 /// An asynchronous resolver for DNS generic over async Runtimes.
 ///
@@ -49,11 +128,11 @@ pub struct Resolver<P: ConnectionProvider> {
     config: ResolverConfig,
     options: ResolverOpts,
     client_cache: CachingClient<LookupEither<P>>,
-    hosts: Option<Arc<Hosts>>,
+    hosts: Arc<Hosts>,
 }
 
 /// A Resolver used with Tokio
-#[cfg(feature = "tokio-runtime")]
+#[cfg(feature = "tokio")]
 pub type TokioResolver = Resolver<TokioConnectionProvider>;
 
 macro_rules! lookup_fn {
@@ -89,84 +168,43 @@ macro_rules! lookup_fn {
     };
 }
 
-#[cfg(feature = "tokio-runtime")]
+#[cfg(feature = "tokio")]
 impl TokioResolver {
-    /// Construct a new Tokio based `Resolver` with the provided configuration.
-    ///
-    /// # Arguments
-    ///
-    /// * `config` - configuration, name_servers, etc. for the Resolver
-    /// * `options` - basic lookup options for the resolver
-    pub fn tokio(config: ResolverConfig, options: ResolverOpts) -> Self {
-        Self::new(config, options, TokioConnectionProvider::default())
-    }
-
     /// Constructs a new Tokio based Resolver with the system configuration.
     ///
     /// This will use `/etc/resolv.conf` on Unix OSes and the registry on Windows.
     #[cfg(any(unix, target_os = "windows"))]
     #[cfg(feature = "system-config")]
-    pub fn tokio_from_system_conf() -> Result<Self, ResolveError> {
-        Self::from_system_conf(TokioConnectionProvider::default())
+    pub fn builder_tokio() -> Result<ResolverBuilder<TokioConnectionProvider>, ResolveError> {
+        Self::builder(TokioConnectionProvider::default())
     }
 }
 
 impl<R: ConnectionProvider> Resolver<R> {
-    /// Construct a new generic `Resolver` with the provided configuration.
+    /// Constructs a new [`Resolver`] via [`ResolverBuilder`] with the operating system's
+    /// configuration.
     ///
-    /// To use this with Tokio, see [TokioResolver::tokio] instead.
-    ///
-    /// # Arguments
-    ///
-    /// * `config` - configuration, name_servers, etc. for the Resolver
-    /// * `options` - basic lookup options for the resolver
-    /// * `provider` - connection provider, for DNS connections, I/O, and timers
-    pub fn new(config: ResolverConfig, options: ResolverOpts, provider: R) -> Self {
-        let pool = NameServerPool::from_config_with_provider(&config, options.clone(), provider);
-        let either;
-        let client = RetryDnsHandle::new(pool, options.attempts);
-        if options.validate {
-            #[cfg(feature = "__dnssec")]
-            {
-                use crate::proto::dnssec::DnssecDnsHandle;
-                either = LookupEither::Secure(DnssecDnsHandle::new(client));
-            }
-
-            #[cfg(not(feature = "__dnssec"))]
-            {
-                // TODO: should this just be a panic, or a pinned error?
-                tracing::warn!("validate option is only available with 'dnssec' feature");
-                either = LookupEither::Retry(client);
-            }
-        } else {
-            either = LookupEither::Retry(client);
-        }
-
-        let hosts = match options.use_hosts_file {
-            ResolveHosts::Always | ResolveHosts::Auto => Some(Arc::new(Hosts::new())),
-            ResolveHosts::Never => None,
-        };
-
-        trace!("handle passed back");
-        let lru = DnsLru::new(options.cache_size, dns_lru::TtlConfig::from_opts(&options));
-        Self {
-            config,
-            client_cache: CachingClient::with_cache(lru, either, options.preserve_intermediates),
-            options,
-            hosts,
-        }
-    }
-
-    /// Constructs a new Resolver with the system configuration.
-    ///
-    /// To use this with Tokio, see [TokioResolver::tokio_from_system_conf] instead.
+    /// To use this with Tokio, see [TokioResolver::builder_tokio] instead.
     ///
     /// This will use `/etc/resolv.conf` on Unix OSes and the registry on Windows.
     #[cfg(any(unix, target_os = "windows"))]
     #[cfg(feature = "system-config")]
-    pub fn from_system_conf(provider: R) -> Result<Self, ResolveError> {
+    pub fn builder(provider: R) -> Result<ResolverBuilder<R>, ResolveError> {
         let (config, options) = super::system_conf::read_system_conf()?;
-        Ok(Self::new(config, options, provider))
+        let mut builder = Self::builder_with_config(config, provider);
+        *builder.options_mut() = options;
+        Ok(builder)
+    }
+
+    /// Construct a new [`Resolver`] via [`ResolverBuilder`] with the provided configuration.
+    pub fn builder_with_config(config: ResolverConfig, provider: R) -> ResolverBuilder<R> {
+        ResolverBuilder {
+            config,
+            options: ResolverOpts::default(),
+            provider,
+            #[cfg(feature = "__dnssec")]
+            trust_anchor: None,
+        }
     }
 
     /// Flushes/Removes all entries from the cache
@@ -191,6 +229,7 @@ impl<P: ConnectionProvider> Resolver<P> {
         let mut request_opts = DnsRequestOptions::default();
         request_opts.recursion_desired = self.options.recursion_desired;
         request_opts.use_edns = self.options.edns0;
+        request_opts.case_randomization = self.options.case_randomization;
 
         request_opts
     }
@@ -358,7 +397,7 @@ impl<P: ConnectionProvider> Resolver<P> {
         };
 
         let names = self.build_names(name);
-        let hosts = self.hosts.as_ref().cloned();
+        let hosts = self.hosts.clone();
 
         LookupIpFuture::lookup(
             names,
@@ -372,8 +411,8 @@ impl<P: ConnectionProvider> Resolver<P> {
     }
 
     /// Customizes the static hosts used in this resolver.
-    pub fn set_hosts(&mut self, hosts: Option<Hosts>) {
-        self.hosts = hosts.map(Arc::new);
+    pub fn set_hosts(&mut self, hosts: Arc<Hosts>) {
+        self.hosts = hosts;
     }
 
     lookup_fn!(
@@ -430,7 +469,13 @@ where
         options: DnsRequestOptions,
         client_cache: CachingClient<C>,
     ) -> Self {
-        Self::lookup_with_hosts(names, record_type, options, client_cache, None)
+        Self::lookup_with_hosts(
+            names,
+            record_type,
+            options,
+            client_cache,
+            Arc::new(Hosts::default()),
+        )
     }
 
     /// Perform a lookup from a name and type to a set of RDatas, taking the local
@@ -447,8 +492,8 @@ where
         mut names: Vec<Name>,
         record_type: RecordType,
         options: DnsRequestOptions,
-        mut client_cache: CachingClient<C>,
-        hosts: Option<Arc<Hosts>>,
+        client_cache: CachingClient<C>,
+        hosts: Arc<Hosts>,
     ) -> Self {
         let name = names.pop().ok_or_else(|| {
             ResolveError::from(ResolveErrorKind::Message("can not lookup for no names"))
@@ -458,7 +503,7 @@ where
             Ok(name) => {
                 let query = Query::query(name, record_type);
 
-                if let Some(lookup) = hosts.and_then(|h| h.lookup_static_host(&query)) {
+                if let Some(lookup) = hosts.lookup_static_host(&query) {
                     future::ok(lookup).boxed()
                 } else {
                     client_cache.lookup(query, options).boxed()
@@ -528,18 +573,18 @@ where
 }
 
 /// Unit tests compatible with different runtime.
-#[cfg(all(test, any(feature = "async-std", feature = "tokio-runtime")))]
+#[cfg(all(test, feature = "tokio"))]
 pub(crate) mod testing {
     use std::{net::*, str::FromStr};
 
     use crate::Resolver;
-    use crate::config::{LookupIpStrategy, NameServerConfig, ResolverConfig, ResolverOpts};
+    use crate::config::{LookupIpStrategy, NameServerConfig, ResolverConfig};
     use crate::name_server::ConnectionProvider;
     use crate::proto::{rr::Name, runtime::Executor};
 
     /// Test IP lookup from URLs.
     pub(crate) async fn lookup_test<R: ConnectionProvider>(config: ResolverConfig, handle: R) {
-        let resolver = Resolver::<R>::new(config, ResolverOpts::default(), handle);
+        let resolver = Resolver::<R>::builder_with_config(config, handle).build();
 
         let response = resolver
             .lookup_ip("www.example.com.")
@@ -552,7 +597,7 @@ pub(crate) mod testing {
     /// Test IP lookup from IP literals.
     pub(crate) async fn ip_lookup_test<R: ConnectionProvider>(handle: R) {
         let resolver =
-            Resolver::<R>::new(ResolverConfig::default(), ResolverOpts::default(), handle);
+            Resolver::<R>::builder_with_config(ResolverConfig::default(), handle).build();
 
         let response = resolver
             .lookup_ip("10.1.0.2")
@@ -584,7 +629,7 @@ pub(crate) mod testing {
         // Resolver works correctly.
         use std::thread;
         let resolver =
-            Resolver::<R>::new(ResolverConfig::default(), ResolverOpts::default(), handle);
+            Resolver::<R>::builder_with_config(ResolverConfig::default(), handle).build();
 
         let resolver_one = resolver.clone();
         let resolver_two = resolver;
@@ -628,15 +673,10 @@ pub(crate) mod testing {
     /// Test IP lookup from URLs with DNSSEC validation.
     #[cfg(feature = "__dnssec")]
     pub(crate) async fn sec_lookup_test<R: ConnectionProvider>(handle: R) {
-        let resolver = Resolver::new(
-            ResolverConfig::default(),
-            ResolverOpts {
-                validate: true,
-                try_tcp_on_error: true,
-                ..ResolverOpts::default()
-            },
-            handle,
-        );
+        let mut resolver_builder = Resolver::builder_with_config(ResolverConfig::default(), handle);
+        resolver_builder.options_mut().validate = true;
+        resolver_builder.options_mut().try_tcp_on_error = true;
+        let resolver = resolver_builder.build();
 
         let response = resolver
             .lookup_ip("www.example.com.")
@@ -656,15 +696,10 @@ pub(crate) mod testing {
     #[allow(deprecated)]
     #[cfg(feature = "__dnssec")]
     pub(crate) async fn sec_lookup_fails_test<R: ConnectionProvider>(handle: R) {
-        let resolver = Resolver::new(
-            ResolverConfig::default(),
-            ResolverOpts {
-                validate: true,
-                ip_strategy: LookupIpStrategy::Ipv4Only,
-                ..ResolverOpts::default()
-            },
-            handle,
-        );
+        let mut resolver_builder = Resolver::builder_with_config(ResolverConfig::default(), handle);
+        resolver_builder.options_mut().validate = true;
+        resolver_builder.options_mut().ip_strategy = LookupIpStrategy::Ipv4Only;
+        let resolver = resolver_builder.build();
 
         // needs to be a domain that exists, but is not signed (eventually this will be)
         let response = resolver.lookup_ip("hickory-dns.org.").await;
@@ -678,7 +713,9 @@ pub(crate) mod testing {
     /// Test Resolver created from system configuration with IP lookup.
     #[cfg(feature = "system-config")]
     pub(crate) async fn system_lookup_test<R: ConnectionProvider>(handle: R) {
-        let resolver = Resolver::<R>::from_system_conf(handle).expect("failed to create resolver");
+        let resolver = Resolver::<R>::builder(handle)
+            .expect("failed to create resolver")
+            .build();
 
         let response = resolver
             .lookup_ip("www.example.com.")
@@ -703,7 +740,9 @@ pub(crate) mod testing {
     /// Test Resolver created from system configuration with host lookups.
     #[cfg(feature = "system-config")]
     pub(crate) async fn hosts_lookup_test<R: ConnectionProvider>(handle: R) {
-        let resolver = Resolver::<R>::from_system_conf(handle).expect("failed to create resolver");
+        let resolver = Resolver::<R>::builder(handle)
+            .expect("failed to create resolver")
+            .build();
 
         let response = resolver
             .lookup_ip("a.com")
@@ -730,14 +769,12 @@ pub(crate) mod testing {
         let name_servers: Vec<NameServerConfig> =
             ResolverConfig::default().name_servers().to_owned();
 
-        let resolver = Resolver::<R>::new(
+        let mut resolver_builder = Resolver::<R>::builder_with_config(
             ResolverConfig::from_parts(Some(domain), search, name_servers),
-            ResolverOpts {
-                ip_strategy: LookupIpStrategy::Ipv4Only,
-                ..ResolverOpts::default()
-            },
             handle,
         );
+        resolver_builder.options_mut().ip_strategy = LookupIpStrategy::Ipv4Only;
+        let resolver = resolver_builder.build();
 
         let response = resolver
             .lookup_ip("www.example.com.")
@@ -760,16 +797,14 @@ pub(crate) mod testing {
         let name_servers: Vec<NameServerConfig> =
             ResolverConfig::default().name_servers().to_owned();
 
-        let resolver = Resolver::<R>::new(
+        let mut resolver_builder = Resolver::<R>::builder_with_config(
             ResolverConfig::from_parts(Some(domain), search, name_servers),
-            ResolverOpts {
-                // our name does have 2, the default should be fine, let's just narrow the test criteria a bit.
-                ndots: 2,
-                ip_strategy: LookupIpStrategy::Ipv4Only,
-                ..ResolverOpts::default()
-            },
             handle,
         );
+        // our name does have 2, the default should be fine, let's just narrow the test criteria a bit.
+        resolver_builder.options_mut().ndots = 2;
+        resolver_builder.options_mut().ip_strategy = LookupIpStrategy::Ipv4Only;
+        let resolver = resolver_builder.build();
 
         // notice this is not a FQDN, no trailing dot.
         let response = resolver
@@ -793,16 +828,14 @@ pub(crate) mod testing {
         let name_servers: Vec<NameServerConfig> =
             ResolverConfig::default().name_servers().to_owned();
 
-        let resolver = Resolver::<R>::new(
+        let mut resolver_builder = Resolver::<R>::builder_with_config(
             ResolverConfig::from_parts(Some(domain), search, name_servers),
-            ResolverOpts {
-                // matches kubernetes default
-                ndots: 5,
-                ip_strategy: LookupIpStrategy::Ipv4Only,
-                ..ResolverOpts::default()
-            },
             handle,
         );
+        // matches kubernetes default
+        resolver_builder.options_mut().ndots = 5;
+        resolver_builder.options_mut().ip_strategy = LookupIpStrategy::Ipv4Only;
+        let resolver = resolver_builder.build();
 
         // notice this is not a FQDN, no trailing dot.
         let response = resolver
@@ -827,14 +860,12 @@ pub(crate) mod testing {
         let name_servers: Vec<NameServerConfig> =
             ResolverConfig::default().name_servers().to_owned();
 
-        let resolver = Resolver::<R>::new(
+        let mut resolver_builder = Resolver::<R>::builder_with_config(
             ResolverConfig::from_parts(Some(domain), search, name_servers),
-            ResolverOpts {
-                ip_strategy: LookupIpStrategy::Ipv4Only,
-                ..ResolverOpts::default()
-            },
             handle,
         );
+        resolver_builder.options_mut().ip_strategy = LookupIpStrategy::Ipv4Only;
+        let resolver = resolver_builder.build();
 
         // notice no dots, should not trigger ndots rule
         let response = resolver
@@ -860,14 +891,12 @@ pub(crate) mod testing {
         let name_servers: Vec<NameServerConfig> =
             ResolverConfig::default().name_servers().to_owned();
 
-        let resolver = Resolver::<R>::new(
+        let mut resolver_builder = Resolver::<R>::builder_with_config(
             ResolverConfig::from_parts(Some(domain), search, name_servers),
-            ResolverOpts {
-                ip_strategy: LookupIpStrategy::Ipv4Only,
-                ..ResolverOpts::default()
-            },
             handle,
         );
+        resolver_builder.options_mut().ip_strategy = LookupIpStrategy::Ipv4Only;
+        let resolver = resolver_builder.build();
 
         // notice no dots, should not trigger ndots rule
         let response = resolver
@@ -884,7 +913,7 @@ pub(crate) mod testing {
     /// Test idna.
     pub(crate) async fn idna_test<R: ConnectionProvider>(handle: R) {
         let resolver =
-            Resolver::<R>::new(ResolverConfig::default(), ResolverOpts::default(), handle);
+            Resolver::<R>::builder_with_config(ResolverConfig::default(), handle).build();
 
         let response = resolver
             .lookup_ip("中国.icom.museum.")
@@ -898,14 +927,10 @@ pub(crate) mod testing {
 
     /// Test ipv4 localhost.
     pub(crate) async fn localhost_ipv4_test<R: ConnectionProvider>(handle: R) {
-        let resolver = Resolver::<R>::new(
-            ResolverConfig::default(),
-            ResolverOpts {
-                ip_strategy: LookupIpStrategy::Ipv4thenIpv6,
-                ..ResolverOpts::default()
-            },
-            handle,
-        );
+        let mut resolver_builder =
+            Resolver::<R>::builder_with_config(ResolverConfig::default(), handle);
+        resolver_builder.options_mut().ip_strategy = LookupIpStrategy::Ipv4thenIpv6;
+        let resolver = resolver_builder.build();
 
         let response = resolver
             .lookup_ip("localhost")
@@ -918,14 +943,10 @@ pub(crate) mod testing {
 
     /// Test ipv6 localhost.
     pub(crate) async fn localhost_ipv6_test<R: ConnectionProvider>(handle: R) {
-        let resolver = Resolver::<R>::new(
-            ResolverConfig::default(),
-            ResolverOpts {
-                ip_strategy: LookupIpStrategy::Ipv6thenIpv4,
-                ..ResolverOpts::default()
-            },
-            handle,
-        );
+        let mut resolver_builder =
+            Resolver::<R>::builder_with_config(ResolverConfig::default(), handle);
+        resolver_builder.options_mut().ip_strategy = LookupIpStrategy::Ipv6thenIpv4;
+        let resolver = resolver_builder.build();
 
         let response = resolver
             .lookup_ip("localhost")
@@ -944,15 +965,10 @@ pub(crate) mod testing {
         let mut config = ResolverConfig::default();
         config.add_search(Name::from_str("example.com").unwrap());
 
-        let resolver = Resolver::<R>::new(
-            config,
-            ResolverOpts {
-                ip_strategy: LookupIpStrategy::Ipv4Only,
-                ndots: 5,
-                ..ResolverOpts::default()
-            },
-            handle,
-        );
+        let mut resolver_builder = Resolver::<R>::builder_with_config(config, handle);
+        resolver_builder.options_mut().ip_strategy = LookupIpStrategy::Ipv4Only;
+        resolver_builder.options_mut().ndots = 5;
+        let resolver = resolver_builder.build();
 
         let response = resolver
             .lookup_ip("198.51.100.35")
@@ -971,15 +987,10 @@ pub(crate) mod testing {
         let mut config = ResolverConfig::default();
         config.add_search(Name::from_str("example.com").unwrap());
 
-        let resolver = Resolver::<R>::new(
-            config,
-            ResolverOpts {
-                ip_strategy: LookupIpStrategy::Ipv4Only,
-                ndots: 5,
-                ..ResolverOpts::default()
-            },
-            handle,
-        );
+        let mut resolver_builder = Resolver::<R>::builder_with_config(config, handle);
+        resolver_builder.options_mut().ip_strategy = LookupIpStrategy::Ipv4Only;
+        resolver_builder.options_mut().ndots = 5;
+        let resolver = resolver_builder.build();
 
         let response = resolver
             .lookup_ip("2001:db8::c633:6423")
@@ -998,15 +1009,10 @@ pub(crate) mod testing {
         let mut config = ResolverConfig::default();
         config.add_search(Name::from_str("example.com").unwrap());
 
-        let resolver = Resolver::<R>::new(
-            config,
-            ResolverOpts {
-                ip_strategy: LookupIpStrategy::Ipv4Only,
-                ndots: 5,
-                ..ResolverOpts::default()
-            },
-            handle,
-        );
+        let mut resolver_builder = Resolver::<R>::builder_with_config(config, handle);
+        resolver_builder.options_mut().ip_strategy = LookupIpStrategy::Ipv4Only;
+        resolver_builder.options_mut().ndots = 5;
+        let resolver = resolver_builder.build();
 
         let response = resolver
             .lookup_ip("2001:db8::198.51.100.35")
@@ -1022,7 +1028,7 @@ pub(crate) mod testing {
 }
 
 #[cfg(test)]
-#[cfg(feature = "tokio-runtime")]
+#[cfg(feature = "tokio")]
 #[allow(clippy::extra_unused_type_parameters)]
 mod tests {
     use std::net::{IpAddr, Ipv4Addr};
@@ -1223,7 +1229,7 @@ mod tests {
         let handle = TokioConnectionProvider::default();
         let mut config = ResolverConfig::default();
         config.add_search(Name::from_ascii("example.com.").unwrap());
-        let resolver = Resolver::new(config, ResolverOpts::default(), handle);
+        let resolver = Resolver::builder_with_config(config, handle).build();
 
         assert_eq!(resolver.build_names(Name::from_str("").unwrap()).len(), 2);
         assert_eq!(resolver.build_names(Name::from_str(".").unwrap()).len(), 1);
@@ -1242,7 +1248,7 @@ mod tests {
         let handle = TokioConnectionProvider::default();
         let mut config = ResolverConfig::default();
         config.add_search(Name::from_ascii("example.com.").unwrap());
-        let resolver = Resolver::new(config, ResolverOpts::default(), handle);
+        let resolver = Resolver::builder_with_config(config, handle).build();
         let tor_address = [
             Name::from_ascii("2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion")
                 .unwrap(),

@@ -8,16 +8,22 @@
 //! `DnsHandle` types perform conversions of the raw DNS messages before sending the messages on the specified streams.
 
 use futures_util::stream::Stream;
-use rand;
+#[cfg(any(feature = "std", feature = "no-std-rand"))]
 use tracing::debug;
 
-use crate::op::{Message, MessageType, OpCode, Query};
+use crate::error::*;
+use crate::op::Query;
 use crate::xfer::{DnsRequest, DnsRequestOptions, DnsResponse, SerialMessage};
-use crate::{error::*, op::Edns};
+#[cfg(any(feature = "std", feature = "no-std-rand"))]
+use crate::{
+    op::{Edns, Message, MessageType, OpCode},
+    random,
+};
 
 // TODO: this should be configurable
 // > An EDNS buffer size of 1232 bytes will avoid fragmentation on nearly all current networks.
 // https://dnsflagday.net/2020/
+#[cfg(any(feature = "std", feature = "no-std-rand"))]
 const MAX_PAYLOAD_LEN: u16 = 1232;
 
 /// Implementations of Sinks for sending DNS messages
@@ -60,18 +66,40 @@ pub trait DnsHandle: 'static + Clone + Send + Sync + Unpin {
     ///
     /// * `query` - the query to lookup
     /// * `options` - options to use when constructing the message
+    #[cfg(any(feature = "std", feature = "no-std-rand"))]
     fn lookup(&self, query: Query, options: DnsRequestOptions) -> Self::Response {
         debug!("querying: {} {:?}", query.name(), query.query_type());
-        self.send(DnsRequest::new(build_message(query, options), options))
+        self.send(build_request(query, options))
     }
+
+    /// A *classic* DNS query
+    ///
+    /// This is identical to `query`, but instead takes a `Query` object.
+    ///
+    /// # Arguments
+    ///
+    /// * `query` - the query to lookup
+    /// * `options` - options to use when constructing the message
+    #[cfg(not(any(feature = "std", feature = "no-std-rand")))]
+    fn lookup(&self, query: Query, options: DnsRequestOptions) -> Self::Response;
 }
 
-fn build_message(query: Query, options: DnsRequestOptions) -> Message {
+#[cfg_attr(not(any(feature = "std", feature = "no-std-rand")), expect(unused_mut))]
+#[cfg(any(feature = "std", feature = "no-std-rand"))]
+fn build_request(mut query: Query, options: DnsRequestOptions) -> DnsRequest {
     // build the message
     let mut message: Message = Message::new();
     // TODO: This is not the final ID, it's actually set in the poll method of DNS future
     //  should we just remove this?
-    let id: u16 = rand::random();
+    let id: u16 = random();
+    let mut original_query = None;
+
+    #[cfg(feature = "std")]
+    if options.case_randomization {
+        original_query = Some(query.clone());
+        query.name.randomize_label_case();
+    }
+
     message
         .add_query(query)
         .set_id(id)
@@ -89,5 +117,5 @@ fn build_message(query: Query, options: DnsRequestOptions) -> Message {
             .set_dnssec_ok(options.edns_set_dnssec_ok);
     }
 
-    message
+    DnsRequest::new(message, options).with_original_query(original_query)
 }

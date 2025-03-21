@@ -25,23 +25,23 @@ categories.workspace = true
 license.workspace = true
 
 [features]
-default = ["system-config", "tokio-runtime"]
-async-std = ["dep:async-std", "hickory-proto/async-std"]
+default = ["system-config", "tokio"]
 backtrace = ["dep:backtrace", "hickory-proto/backtrace"]
-dns-over-rustls = [
-    "dep:rustls",
-    "dep:tokio-rustls",
-    "hickory-proto/dns-over-rustls",
-    "tokio-runtime",
-]
 
-# This requires some TLS library, currently only rustls is supported
-dns-over-https-rustls = [
-    "hickory-proto/dns-over-https-rustls",
-    "dns-over-rustls",
-]
-dns-over-quic = ["dep:quinn", "dns-over-rustls", "hickory-proto/dns-over-quic"]
-dns-over-h3 = ["dep:quinn", "dns-over-rustls", "hickory-proto/dns-over-h3"]
+tls-aws-lc-rs = ["hickory-proto/tls-aws-lc-rs", "__tls"]
+https-aws-lc-rs = ["hickory-proto/https-aws-lc-rs", "__https"]
+quic-aws-lc-rs = ["hickory-proto/quic-aws-lc-rs", "__quic"]
+h3-aws-lc-rs = ["hickory-proto/h3-aws-lc-rs", "__h3"]
+
+tls-ring = ["hickory-proto/tls-ring", "__tls"]
+https-ring = ["hickory-proto/https-ring", "__https"]
+quic-ring = ["hickory-proto/quic-ring", "__quic"]
+h3-ring = ["hickory-proto/h3-ring", "__h3"]
+
+__tls = ["dep:rustls", "dep:tokio-rustls", "tokio"]
+__https = ["__tls"]
+__quic = ["dep:quinn", "__tls"]
+__h3 = ["__quic"]
 
 webpki-roots = ["dep:webpki-roots", "hickory-proto/webpki-roots"]
 rustls-platform-verifier = ["hickory-proto/rustls-platform-verifier"]
@@ -53,14 +53,13 @@ __dnssec = []
 serde = ["dep:serde", "hickory-proto/serde"]
 system-config = ["dep:ipconfig", "dep:resolv-conf"]
 
-tokio-runtime = ["tokio/rt", "hickory-proto/tokio-runtime"]
+tokio = ["dep:tokio", "tokio/rt", "hickory-proto/tokio"]
 
 [lib]
 name = "hickory_resolver"
 path = "src/lib.rs"
 
 [dependencies]
-async-std = { workspace = true, optional = true, features = ["attributes"] }
 backtrace = { version = "0.3.50", optional = true }
 cfg-if.workspace = true
 futures-util = { workspace = true, default-features = false, features = [
@@ -83,7 +82,7 @@ thiserror.workspace = true
 tracing.workspace = true
 tokio = { workspace = true, optional = true }
 tokio-rustls = { workspace = true, optional = true }
-hickory-proto = { workspace = true, default-features = false }
+hickory-proto.workspace = true
 webpki-roots = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
@@ -94,7 +93,7 @@ futures-executor = { workspace = true, default-features = false, features = ["st
 test-support.workspace = true
 tokio = { workspace = true, features = ["macros", "test-util"] }
 toml.workspace = true
-tracing-subscriber.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt", "std"] }
 
 [package.metadata.docs.rs]
 all-features = true
@@ -104,19 +103,19 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [[example]]
 name = "custom_provider"
-required-features = ["tokio-runtime"]
+required-features = ["tokio"]
 
 [[example]]
 name = "flush_cache"
-required-features = ["tokio-runtime", "system-config"]
+required-features = ["tokio", "system-config"]
 
 [[example]]
 name = "global_resolver"
-required-features = ["tokio-runtime", "system-config"]
+required-features = ["tokio", "system-config"]
 
 [[example]]
 name = "multithreaded_runtime"
-required-features = ["tokio-runtime", "system-config"]
+required-features = ["tokio", "system-config"]
 
 [lints]
 workspace = true
@@ -124,3 +123,4 @@ workspace = true
 [package.metadata.cargo-all-features]
 skip_optional_dependencies = true
 max_combination_size = 2
+denylist = ["__tls", "__https", "__quic", "__h3", "__dnssec"]

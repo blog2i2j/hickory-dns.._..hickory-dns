@@ -7,7 +7,9 @@
 
 //! dns security extension related modules
 
-use std::fmt;
+use alloc::string::String;
+use alloc::vec::Vec;
+use core::fmt;
 
 #[cfg(feature = "backtrace")]
 use backtrace::Backtrace;
@@ -47,7 +49,7 @@ pub use self::public_key::{PublicKey, PublicKeyBuf};
 pub use self::signer::SigSigner;
 pub use self::supported_algorithm::SupportedAlgorithms;
 pub use self::tbs::TBS;
-pub use self::trust_anchor::TrustAnchor;
+pub use self::trust_anchor::TrustAnchors;
 pub use self::verifier::Verifier;
 
 /// DNSSEC Delegation Signer (DS) Resource Record (RR) Type Digest Algorithms
@@ -138,7 +140,7 @@ pub enum KeyFormat {
 }
 
 /// An alias for dnssec results returned by functions of this crate
-pub type DnsSecResult<T> = ::std::result::Result<T, DnsSecError>;
+pub type DnsSecResult<T> = ::core::result::Result<T, DnsSecError>;
 
 /// The error type for dnssec errors that get returned in the crate
 #[derive(Debug, Clone, Error)]
